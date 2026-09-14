@@ -12,9 +12,9 @@ GH_CONFIG_DIR=~/.config/gh-work
 
 ### PR metadata
 
-- `gh pr view --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner`
+- `gh pr view --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision`
 
-Used to resolve PR number, URL, branch, head SHA, and closed/merged state.
+Used to resolve PR number, URL, branch, head SHA, mergeability, review decision, and closed/merged state.
 
 ### PR checks summary
 
@@ -43,7 +43,9 @@ Used by the agent to classify branch-related vs flaky/unrelated failures. Prefer
 
 Reruns only failed jobs (and dependencies) for a workflow run.
 
-## Review-related endpoints
+## Review endpoints & commands
+
+### Fetching review comments and threads
 
 - Issue comments on PR:
   - `gh api repos/{owner}/{repo}/issues/<pr_number>/comments?per_page=100`
@@ -51,9 +53,74 @@ Reruns only failed jobs (and dependencies) for a workflow run.
   - `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments?per_page=100`
 - Review submissions:
   - `gh api repos/{owner}/{repo}/pulls/<pr_number>/reviews?per_page=100`
+- Review threads & resolution status (GraphQL):
+  ```graphql
+  query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 100) {
+          nodes {
+            id
+            isResolved
+            isOutdated
+            comments(first: 50) {
+              nodes {
+                id
+                databaseId
+                body
+                author { login }
+                createdAt
+                path
+                line
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  ```
 
-Use each inline comment's `pull_request_review_id` to find its parent review. Ignore parent reviews
-whose `state` is `PENDING`, along with their inline comments, until the review is submitted.
+### Replying to comments & threads
+
+- **Reply to an inline review comment thread**:
+  ```bash
+  gh api repos/{owner}/{repo}/pulls/<pr_number>/comments/<comment_id>/replies -X POST -f body="[agent]: <message>"
+  ```
+- **Reply to an issue comment / general PR comment**:
+  ```bash
+  gh api repos/{owner}/{repo}/issues/<pr_number>/comments -X POST -f body="[agent]: <message>"
+  # or
+  gh pr comment <pr_number> --body "[agent]: <message>"
+  ```
+
+### Resolving review threads
+
+- **Resolve a review thread via GraphQL**:
+  ```bash
+  gh api graphql -f query='
+  mutation($threadId: ID!) {
+    resolveReviewThread(input: {threadId: $threadId}) {
+      thread {
+        id
+        isResolved
+      }
+    }
+  }' -F threadId="<thread_id>"
+  ```
+
+- **Unresolve a review thread via GraphQL (if needed)**:
+  ```bash
+  gh api graphql -f query='
+  mutation($threadId: ID!) {
+    unresolveReviewThread(input: {threadId: $threadId}) {
+      thread {
+        id
+        isResolved
+      }
+    }
+  }' -F threadId="<thread_id>"
+  ```
 
 ## JSON fields consumed by the watcher
 
@@ -66,6 +133,9 @@ whose `state` is `PENDING`, along with their inline comments, until the review i
 - `closedAt`
 - `headRefName`
 - `headRefOid`
+- `mergeable`
+- `mergeStateStatus`
+- `reviewDecision`
 
 ### `gh pr checks`
 

@@ -43,6 +43,10 @@ TRUSTED_AUTHOR_ASSOCIATIONS = {
     "OWNER",
     "MEMBER",
     "COLLABORATOR",
+    "CONTRIBUTOR",
+    "FIRST_TIME_CONTRIBUTOR",
+    "FIRST_TIMER",
+    "NONE",
 }
 MERGE_BLOCKING_REVIEW_DECISIONS = {
     "REVIEW_REQUIRED",
@@ -520,6 +524,7 @@ def fetch_pr_review_threads(repo, pr_number):
               isOutdated
               comments(first: 50) {
                 nodes {
+                  id
                   databaseId
                   body
                   author {
@@ -607,7 +612,9 @@ def normalize_issue_comments(items):
     return out
 
 
-def normalize_review_comments(items, review_states):
+def normalize_review_comments(items, review_states, comment_thread_map=None):
+    if comment_thread_map is None:
+        comment_thread_map = {}
     out = []
     for item in items:
         if not isinstance(item, dict):
@@ -618,10 +625,12 @@ def normalize_review_comments(items, review_states):
         line = item.get("line")
         if line is None:
             line = item.get("original_line")
+        cid = str(item.get("id") or "")
         out.append(
             {
                 "kind": "review_comment",
-                "id": str(item.get("id") or ""),
+                "id": cid,
+                "thread_id": comment_thread_map.get(cid),
                 "author": extract_login(item.get("user")),
                 "author_association": str(item.get("author_association") or ""),
                 "created_at": str(item.get("created_at") or ""),
@@ -676,14 +685,11 @@ def is_actionable_review_bot_login(login):
     return any(keyword in lower_login for keyword in REVIEW_BOT_LOGIN_KEYWORDS)
 
 
-def is_trusted_human_review_author(item, authenticated_login):
+def is_human_review_author(item, authenticated_login=None):
     author = str(item.get("author") or "")
     if not author:
         return False
-    if authenticated_login and author == authenticated_login:
-        return True
-    association = str(item.get("author_association") or "").upper()
-    return association in TRUSTED_AUTHOR_ASSOCIATIONS
+    return not is_bot_login(author)
 
 
 def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
@@ -694,9 +700,11 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
     threads = fetch_pr_review_threads(repo, pr_number)
     resolved_comment_ids = set()
     unresolved_threads = []
+    comment_thread_map = {}
     for thread in threads:
         if not isinstance(thread, dict):
             continue
+        thread_id = thread.get("id")
         is_resolved = bool(thread.get("isResolved"))
         is_outdated = bool(thread.get("isOutdated"))
         comments_nodes = (
@@ -707,6 +715,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         for c in comments_nodes:
             if isinstance(c, dict) and c.get("databaseId"):
                 cid = str(c["databaseId"])
+                comment_thread_map[cid] = thread_id
                 if is_resolved:
                     resolved_comment_ids.add(cid)
         if not is_resolved and not is_outdated and comments_nodes:
@@ -748,7 +757,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         and str(item.get("pull_request_review_id") or "") in pending_review_ids
     }
     review_comment_items = normalize_review_comments(
-        review_comment_payload, review_states
+        review_comment_payload, review_states, comment_thread_map=comment_thread_map
     )
     review_items = normalize_reviews(review_payload)
     all_items = issue_items + review_comment_items + review_items
@@ -773,7 +782,7 @@ def fetch_new_review_items(pr, state, fresh_state, authenticated_login=None):
         if is_bot_login(author):
             if not is_actionable_review_bot_login(author):
                 continue
-        elif not is_trusted_human_review_author(item, authenticated_login):
+        elif not is_human_review_author(item, authenticated_login):
             continue
 
         if item_id in resolved_comment_ids:
@@ -946,6 +955,38 @@ def collect_snapshot(args):
     state["last_snapshot_at"] = int(time.time())
     save_state(state_path, state)
 
+    formatted_unresolved_threads = []
+    for thread in unresolved_threads:
+        if not isinstance(thread, dict):
+            continue
+        comments_nodes = (
+            thread.get("comments", {}).get("nodes", [])
+            if isinstance(thread.get("comments"), dict)
+            else []
+        )
+        formatted_unresolved_threads.append(
+            {
+                "thread_id": thread.get("id"),
+                "is_resolved": bool(thread.get("isResolved")),
+                "is_outdated": bool(thread.get("isOutdated")),
+                "comments": [
+                    {
+                        "id": str(c.get("databaseId") or ""),
+                        "node_id": c.get("id"),
+                        "author": (c.get("author") or {}).get("login", "")
+                        if isinstance(c.get("author"), dict)
+                        else "",
+                        "body": c.get("body", ""),
+                        "path": c.get("path"),
+                        "line": c.get("line") or c.get("originalLine"),
+                        "created_at": c.get("createdAt", ""),
+                    }
+                    for c in comments_nodes
+                    if isinstance(c, dict)
+                ],
+            }
+        )
+
     snapshot = {
         "pr": pr,
         "checks": checks_summary,
@@ -953,6 +994,7 @@ def collect_snapshot(args):
         "failed_jobs": failed_jobs,
         "new_review_items": new_review_items,
         "unresolved_review_threads_count": len(unresolved_threads),
+        "unresolved_review_threads": formatted_unresolved_threads,
         "actions": actions,
         "retry_state": {
             "current_sha_retries_used": retries_used,
@@ -1065,11 +1107,7 @@ def run_watch(args):
         snapshot, state_path = collect_snapshot(args)
         print_event(
             "snapshot",
-            {
-                "snapshot": snapshot,
-                "state_file": str(state_path),
-                "next_poll_seconds": poll_seconds,
-            },
+            {"snapshot": snapshot, "state_file": str(state_path), "next_poll_seconds": poll_seconds},
         )
         actions = set(snapshot.get("actions") or [])
         if "stop_pr_closed" in actions or "stop_exhausted_retries" in actions:

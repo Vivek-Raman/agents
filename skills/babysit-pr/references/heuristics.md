@@ -25,34 +25,40 @@ If uncertain, inspect failed logs once before choosing rerun.
 ## Decision tree (fix vs rerun vs stop)
 
 1. If PR is merged/closed: stop.
-2. If there are failed checks:
+2. If there are new review items or unresolved review threads:
+   - All review comments must be addressed and resolved.
+   - For actionable code feedback: patch code locally, commit, push, reply to the comment/thread with commit references, and resolve the thread.
+   - For questions or non-actionable feedback: freely reply directly on GitHub with clear explanation, and resolve the thread.
+3. If there are failed checks:
    - Diagnose first.
    - If checks are still pending but an individual job has already failed: fetch that job's logs and diagnose now.
    - If branch-related: fix locally, commit, push.
    - If likely flaky/unrelated and all checks for the current SHA are terminal: rerun failed jobs.
    - If likely flaky/unrelated and not safely rerunnable: stop and report the blocker; do not edit unrelated tests, build scripts, CI configuration, dependency pins, or infrastructure code.
    - If checks are still pending and no failed job is available yet: wait.
-3. If flaky reruns for the same SHA reach the configured limit (default 3): stop and report persistent failure.
-4. Independently, process any new human review comments.
+4. If flaky reruns for the same SHA reach the configured limit (default 3): stop and report persistent failure.
 
-## Review comment agreement criteria
+## Review comment handling & resolution criteria
 
-Address the comment when:
+All review comments must be addressed and resolved as a core goal:
 
-- The comment is technically correct.
-- The change is actionable in the current branch.
-- The requested change does not conflict with the user’s intent or recent guidance.
-- The change can be made safely without unrelated refactors.
+- **Actionable code suggestions**:
+  - Apply the code changes in the branch.
+  - Commit and push.
+  - Reply to the review thread explaining what was updated and reference the commit.
+  - Resolve the review thread on GitHub.
 
-Fix valid human review feedback in code when possible, but do not post a GitHub reply to a human-authored comment/thread unless the user explicitly confirms the exact response.
+- **Questions & clarifications**:
+  - Freely reply directly to the comment/thread on GitHub with a clear, polite, and helpful explanation.
+  - Resolve the review thread on GitHub once addressed.
 
-Do not auto-fix when:
+- **Non-actionable / declined suggestions**:
+  - Reply explaining the technical reasoning or context why no code change is necessary.
+  - Resolve the review thread on GitHub.
 
-- The comment is ambiguous and needs clarification.
-- The request conflicts with explicit user instructions.
-- The proposed change requires product/design decisions the user has not made.
-- The codebase is in a dirty/unrelated state that makes safe editing uncertain.
-- The comment only needs a written answer or disagreement response; propose the reply to the user instead of posting it automatically.
+- **AI reviewer bot feedback (Copilot, CodeRabbit, Claude, etc.)**:
+  - Address actionable suggestions with fixes, reply, and resolve the thread.
+  - If a bot suggestion is invalid or a false positive, reply explaining why and resolve the thread.
 
 ## Stop-and-ask conditions
 
@@ -62,5 +68,4 @@ Stop and ask the user instead of continuing automatically when:
 - `gh` auth/permissions fail.
 - The PR branch cannot be pushed.
 - CI failures persist after the flaky retry budget.
-- Reviewer feedback requires a product decision or cross-team coordination.
-- A human review comment requires a written GitHub reply instead of a code change.
+- Reviewer feedback requires a high-level product/design decision or cross-team coordination that cannot be determined safely from context.
