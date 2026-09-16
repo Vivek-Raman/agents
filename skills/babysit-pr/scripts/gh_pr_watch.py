@@ -159,20 +159,42 @@ def gh_text(args, repo=None, cwd=None):
     if repo and (not args or args[0] != "api"):
         cmd.extend(["-R", repo])
     cmd.extend(args)
-    try:
-        proc = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=get_gh_env(cwd),
-            cwd=cwd,
-        )
-    except FileNotFoundError as err:
-        raise GhCommandError("`gh` command not found") from err
-    except subprocess.CalledProcessError as err:
-        raise GhCommandError(_format_gh_error(cmd, err)) from err
-    return proc.stdout
+    max_retries = 4
+    for attempt in range(max_retries):
+        try:
+            proc = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=get_gh_env(cwd),
+                cwd=cwd,
+            )
+            return proc.stdout
+        except FileNotFoundError as err:
+            raise GhCommandError("`gh` command not found") from err
+        except subprocess.CalledProcessError as err:
+            err_msg = _format_gh_error(cmd, err)
+            is_transient = any(
+                hint in err_msg.lower()
+                for hint in [
+                    "connection reset",
+                    "operation timed out",
+                    "timed out",
+                    "timeout",
+                    "broken pipe",
+                    "connection refused",
+                    "error connecting to api.github.com",
+                    "502",
+                    "503",
+                    "504",
+                ]
+            )
+            if is_transient and attempt < max_retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            raise GhCommandError(err_msg) from err
+    return ""
 
 
 def gh_json(args, repo=None, cwd=None):
