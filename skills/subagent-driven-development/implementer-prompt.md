@@ -39,7 +39,7 @@ Subagent (general-purpose):
     5. Self-review (see below)
     6. Report back
 
-    Work from: [directory]
+    Work from: [directory] (work directly in the active repository; do not create or use git worktrees)
 
     **While you work:** If you encounter something unexpected or unclear, **ask questions**.
     It's always OK to pause and clarify. Don't guess or make assumptions.

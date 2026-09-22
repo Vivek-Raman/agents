@@ -41,7 +41,8 @@ Subagent (general-purpose):
     `git diff [FIX_BASE_SHA]..[HEAD_SHA]`.
 
     Your review is read-only on this checkout. Do not mutate the working
-    tree, the index, HEAD, or branch state in any way.
+    tree, the index, HEAD, or branch state in any way. Do not create or use
+    git worktrees.
 
     ## You Do Not Dispatch Subagents
 
