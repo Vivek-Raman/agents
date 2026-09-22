@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Conduct high-signal, multi-perspective code review for pull requests (including draft PRs) with deep architectural, correctness, security, readability, and performance analysis, parallel subagent dispatch, rigorous confidence scoring, and strict gh CLI workflows.
+description: Conduct high-signal, multi-perspective code review for pull requests (including draft PRs) with deep architectural, correctness, security, readability, and performance analysis, parallel subagent dispatch, rigorous confidence scoring, and strict gh CLI workflows. Always checks out the PR branch directly in the current repository without using git worktrees.
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Provide a high-signal, low-noise, multi-dimensional code review for a GitHub pull request (supporting both draft and ready-for-review PRs).
 
-The review leverages parallel analytical perspectives followed by independent verification and confidence scoring, filtering out pedantic nitpicks and false positives so only verified, actionable issues and structural improvements are reported.
+The review leverages direct branch checkout in the repository (without using git worktrees), parallel analytical perspectives followed by independent verification and confidence scoring, filtering out pedantic nitpicks and false positives so only verified, actionable issues and structural improvements are reported.
 
 ---
 
@@ -24,7 +24,9 @@ The review leverages parallel analytical perspectives followed by independent ve
 ## Environment & Prerequisites
 
 - **Work Environment Configuration**: When operating within `~/Documents/Work` (or any subdirectory), ensure `GH_CONFIG_DIR=~/.config/gh-work` is set for all `gh` CLI invocations.
-- **CLI Tooling**: Use `gh` commands for all GitHub interactions (`gh pr view`, `gh pr diff`, `gh pr comment`, `gh api`, `gh pr list`, `gh issue list`).
+- **Branch Checkout Requirement**: Always check out the PR branch directly in the current repository before performing the review (`gh pr checkout <pr_number_or_url>`).
+- **Strict No-Worktrees Policy**: Never create or use `git worktree` (e.g., `git worktree add`). All file inspection, code analysis, git history checks, repository instruction discovery, and local test executions must run directly on the checked-out branch in the active workspace repository.
+- **CLI Tooling**: Use `gh` commands for all GitHub interactions (`gh pr checkout`, `gh pr view`, `gh pr diff`, `gh pr comment`, `gh api`, `gh pr list`, `gh issue list`).
 - **Git Inspection**: Use local `git` commands for deep history and invariant analysis (`git log -S`, `git blame -L`, `git log -p -n 5 <file>`).
 
 ---
@@ -34,35 +36,41 @@ The review leverages parallel analytical perspectives followed by independent ve
 This skill is agent-agnostic and supports two execution models depending on the harness capabilities:
 
 ### 1. Subagent / Multi-Agent Harness (Antigravity, Gemini CLI, Claude Code, OpenAI Codex)
-- **Screening & Context Extraction:** Use fast/lightweight models for pre-flight eligibility checks, repo instruction discovery, and initial diff summary.
-- **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models. Each subagent focuses deeply on its assigned dimension.
+- **Pre-Flight & Branch Checkout:** Check out the PR branch directly into the working directory (do not use worktrees). Run fast/lightweight models for pre-flight eligibility checks, repo instruction discovery, and initial diff summary.
+- **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models. Subagents inherit the workspace and inspect the checked-out repository directly without creating separate worktrees. Each subagent focuses deeply on its assigned dimension.
 - **Parallel Independent Verification:** Dispatch parallel verification subagents to evaluate and confidence-score candidate issues before aggregating findings.
 
 ```
                   ┌───────────────────────────────┐
-                  │ Pre-Flight & Context Extract  │
-                  └──────────────┬────────────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ Subagent Lens A │     │ Subagent Lens B │     │ Subagent Lens C │
-│  (Correctness)  │     │ (Architecture)  │     │   (Security)    │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 ▼
+                  │ Pre-Flight & Branch Checkout  │
+                  │   (Direct checkout, no WT)    │
+                  └───────────────┬───────────────┘
+                                  │
+                  ┌───────────────┴───────────────┐
+                  │ Repo Guidelines & Diff Context│
+                  └───────────────┬───────────────┘
+                                  │
+         ┌────────────────────────┼────────────────────────┐
+         ▼                        ▼                        ▼
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│ Subagent Lens A │      │ Subagent Lens B │      │ Subagent Lens C │
+│  (Correctness)  │      │ (Architecture)  │      │   (Security)    │
+└────────┬────────┘      └────────┬────────┘      └────────┬────────┘
+         │                        │                        │
+         └────────────────────────┼────────────────────────┘
+                                  ▼
                   ┌───────────────────────────────┐
                   │ Parallel Confidence Scoring   │
                   │     & Verification (>= 80)    │
-                  └──────────────┬────────────────┘
-                                 ▼
+                  └───────────────┬───────────────┘
+                                  ▼
                   ┌───────────────────────────────┐
                   │   Post GitHub Review Comment  │
                   └───────────────────────────────┘
 ```
 
 ### 2. Single-Agent Harness (Cursor, Single-Session CLI)
+- Check out the PR branch directly in the working directory (no worktrees).
 - Run pre-flight checks, repository guideline discovery, and diff extraction.
 - Execute sequential analytical passes across each review lens in the current session.
 - Systematically evaluate confidence scoring for each candidate issue before composing the final comment.
@@ -107,14 +115,29 @@ gh pr view <pr_number_or_url> --json number,title,state,isDraft,author,headRefOi
 
 *(Note: Draft PRs (`isDraft: true`) are explicitly supported to provide early feedback on architecture, correctness, and implementation approach before marking ready for review.)*
 
-### 2. Discover Repository Guidelines & Project Instructions
+### 2. Check Out PR Branch Directly (No Worktrees)
 
-Locate project-specific instruction and guideline files to understand the repository's coding standards:
+Always check out the PR branch directly in the current repository:
+
+```bash
+gh pr checkout <pr_number_or_url>
+```
+
+- **Strict No-Worktrees Policy:** Do **NOT** use `git worktree`, `git worktree add`, or create isolated worktree folders. All file reads, symbol lookups, git commands, and local tests must execute directly in the current workspace repository on the checked-out branch.
+- **Clean Working Tree:** Ensure any uncommitted local modifications are resolved before checking out so `gh pr checkout` succeeds cleanly without overwriting unstaged work.
+- **Fallback Checkout:** If `gh pr checkout` is not supported in the current environment, fetch and check out the branch directly:
+  ```bash
+  git fetch origin pull/<pr_number>/head:<branch_name> && git checkout <branch_name>
+  ```
+
+### 3. Discover Repository Guidelines & Project Instructions
+
+With the branch checked out locally, locate project-specific instruction and guideline files to understand the repository's coding standards:
 - Search root and parent directories: `AGENTS.md`, `CLAUDE.md`, `COPILOT.md`, `CURSOR.md`, `.cursorrules`, `.github/copilot-instructions.md`, `CONTRIBUTING.md`, style guides, or architecture docs.
 - Search touched target subdirectories for localized guideline files.
 - Note discovered rules (do not flood context with irrelevant sections until auditing specific files).
 
-### 3. Extract PR Context, Changes & Intent
+### 4. Extract PR Context, Changes & Intent
 
 Retrieve the full diff and metadata:
 
@@ -125,10 +148,11 @@ gh pr view <pr_number_or_url> --json baseRefOid,headRefOid,title,body
 
 - Review the test changes first: What behavior do the tests expect? Are edge cases covered?
 - Summarize intent, touched modules, architectural impact, and critical paths.
+- Inspect the checked-out files directly for surrounding context.
 
-### 4. Parallel Multi-Perspective Deep Review (The Analytical Lenses)
+### 5. Parallel Multi-Perspective Deep Review (The Analytical Lenses)
 
-Analyze the pull request independently across these analytical lenses (via parallel subagents or dedicated sequential passes). Each lens flags candidate findings with file path, line range, description, and concrete evidence:
+Analyze the pull request independently across these analytical lenses (via parallel subagents inheriting the checked-out workspace or dedicated sequential passes). Each lens flags candidate findings with file path, line range, description, and concrete evidence:
 
 #### Lens 1 — Repository Guidelines & Project Conventions
 - Audit changes against discovered instruction files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursorrules`, etc.).
@@ -167,7 +191,7 @@ Analyze the pull request independently across these analytical lenses (via paral
 - **Execution Paths:** Check for unnecessary synchronous operations blocking async loops, heavy object allocations in hot loops, and unnecessary UI re-renders.
 
 #### Lens 7 — Git History, Invariants & Regression Analysis
-- **Commit History & Blame:** Inspect `git blame -L <start>,<end> <file>` and `git log -S "<symbol>" -p -n 5 <file>` on modified sections.
+- **Commit History & Blame:** Inspect `git blame -L <start>,<end> <file>` and `git log -S "<symbol>" -p -n 5 <file>` on modified sections in the checked-out repository.
 - **Invariant Preservation:** Ensure the PR does not inadvertently revert past bug fixes, break historical invariants, or violate domain assumptions established in prior commits.
 
 #### Lens 8 — Prior PR Context & Historical Discussions
@@ -203,7 +227,7 @@ When flagging architectural or design problems, propose the specific structural 
 
 ## Confidence Scoring & False Positive Filtering
 
-For each candidate issue identified across the lenses, perform rigorous verification and assign a score on a scale of **0–100**:
+For each candidate issue identified across the lenses, perform rigorous verification on the checked-out codebase and assign a score on a scale of **0–100**:
 
 ### Confidence Rubric
 
@@ -292,14 +316,14 @@ No issues found. Checked for correctness, security, architecture, performance, r
 
 ## Post-Flight Check & Posting Review
 
-### 7. Post-Flight Eligibility Recheck
+### 6. Post-Flight Eligibility Recheck
 Before posting, re-verify that the PR remains open (or draft) and has not been concurrently merged or closed:
 
 ```bash
 gh pr view <pr_number_or_url> --json state,isDraft,headRefOid
 ```
 
-### 8. Post GitHub Review Comment
+### 7. Post GitHub Review Comment
 
 Post the formatted comment:
 
@@ -339,9 +363,10 @@ When resolving review disputes, apply this strict hierarchy:
 ### Final Verification Checklist
 
 Before finalizing the review comment:
+- [ ] PR branch checked out directly in the working repository (`gh pr checkout`) without using git worktrees.
 - [ ] Context understood (PR intent, requirements, touched systems).
 - [ ] Diff size assessed (~100 / ~300 / ~1000 lines) and file size evaluated.
-- [ ] All 9 analytical lenses evaluated.
+- [ ] All 9 analytical lenses evaluated directly on the checked-out repository.
 - [ ] Confidence scoring applied to all findings (discarded all < 80).
 - [ ] Findings categorized by severity (`Critical:`, *(Required)*, `Consider:`, `Nit:`, `FYI`).
 - [ ] Permalinks use the static 40-character commit SHA (`headRefOid`) and context lines.
