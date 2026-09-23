@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: Conduct high-signal, multi-perspective code review for pull requests (including draft PRs) with deep architectural, correctness, security, readability, and performance analysis, parallel subagent dispatch, rigorous confidence scoring, and strict gh CLI workflows. Always checks out the PR branch directly in the current repository without using git worktrees.
+description: Conduct high-signal, multi-perspective code review for pull requests (including draft PRs) with deep architectural, correctness, security, readability, and performance analysis, parallel subagent dispatch, rigorous confidence scoring, and inline diff comments via GitHub review API. Always checks out the PR branch directly in the current repository without using git worktrees.
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Provide a high-signal, low-noise, multi-dimensional code review for a GitHub pull request (supporting both draft and ready-for-review PRs).
 
-The review leverages direct branch checkout in the repository (without using git worktrees), parallel analytical perspectives followed by independent verification and confidence scoring, filtering out pedantic nitpicks and false positives so only verified, actionable issues and structural improvements are reported.
+The review leverages direct branch checkout in the repository (without using git worktrees), parallel analytical perspectives followed by independent verification and confidence scoring, filtering out pedantic nitpicks and false positives, and submitting verified actionable findings as **inline comments directly on the code diff** via GitHub's Review API.
 
 ---
 
@@ -16,7 +16,7 @@ The review leverages direct branch checkout in the repository (without using git
 
 - **Continuous Improvement Over Perfection:** Approve a change when it definitely improves overall code health, even if it isn't perfect. Don't block a change because it isn't exactly how you would have written it. If it improves the codebase and follows project conventions, approve it.
 - **Lead With What Matters:** Order findings by leverage: correctness and security first, then structural regressions and missed simplifications, then everything else. If you have one structural problem and ten nits, the structural problem *is* the review.
-- **Propose the Move, Not Just the Problem:** When flagging an architectural or structural problem, propose a concrete named restructuring rather than just stating "this is complex."
+- **Propose the Move, Not Just the Problem:** When flagging an architectural or structural problem, propose a concrete named restructuring or replacement code block rather than just stating "this is complex."
 - **Honesty & Anti-Sycophancy:** Do not rubber-stamp ("LGTM" without review). Do not soften real issues. Quantify problems where possible (e.g., "This N+1 query adds ~50ms per item in the list"). Push back on problematic approaches directly while maintaining focus on the code, not the author.
 
 ---
@@ -26,7 +26,7 @@ The review leverages direct branch checkout in the repository (without using git
 - **Work Environment Configuration**: When operating within `~/Documents/Work` (or any subdirectory), ensure `GH_CONFIG_DIR=~/.config/gh-work` is set for all `gh` CLI invocations.
 - **Branch Checkout Requirement**: Always check out the PR branch directly in the current repository before performing the review (`gh pr checkout <pr_number_or_url>`).
 - **Strict No-Worktrees Policy**: Never create or use `git worktree` (e.g., `git worktree add`). All file inspection, code analysis, git history checks, repository instruction discovery, and local test executions must run directly on the checked-out branch in the active workspace repository.
-- **CLI Tooling**: Use `gh` commands for all GitHub interactions (`gh pr checkout`, `gh pr view`, `gh pr diff`, `gh pr comment`, `gh api`, `gh pr list`, `gh issue list`).
+- **CLI Tooling**: Use `gh` commands for all GitHub interactions (`gh pr checkout`, `gh pr view`, `gh pr diff`, `gh pr review`, `gh api`, `gh pr list`, `gh issue list`).
 - **Git Inspection**: Use local `git` commands for deep history and invariant analysis (`git log -S`, `git blame -L`, `git log -p -n 5 <file>`).
 
 ---
@@ -38,7 +38,7 @@ This skill is agent-agnostic and supports two execution models depending on the 
 ### 1. Subagent / Multi-Agent Harness (Antigravity, Gemini CLI, Claude Code, OpenAI Codex)
 - **Pre-Flight & Branch Checkout:** Check out the PR branch directly into the working directory (do not use worktrees). Run fast/lightweight models for pre-flight eligibility checks, repo instruction discovery, and initial diff summary.
 - **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models. Subagents inherit the workspace and inspect the checked-out repository directly without creating separate worktrees. Each subagent focuses deeply on its assigned dimension.
-- **Parallel Independent Verification:** Dispatch parallel verification subagents to evaluate and confidence-score candidate issues before aggregating findings.
+- **Parallel Independent Verification:** Dispatch parallel verification subagents to evaluate and confidence-score candidate issues before aggregating findings into inline comments.
 
 ```
                   ┌───────────────────────────────┐
@@ -65,7 +65,8 @@ This skill is agent-agnostic and supports two execution models depending on the 
                   └───────────────┬───────────────┘
                                   ▼
                   ┌───────────────────────────────┐
-                  │   Post GitHub Review Comment  │
+                  │   Submit PR Review Payload    │
+                  │  (Inline Diff Comments + Body)│
                   └───────────────────────────────┘
 ```
 
@@ -73,7 +74,7 @@ This skill is agent-agnostic and supports two execution models depending on the 
 - Check out the PR branch directly in the working directory (no worktrees).
 - Run pre-flight checks, repository guideline discovery, and diff extraction.
 - Execute sequential analytical passes across each review lens in the current session.
-- Systematically evaluate confidence scoring for each candidate issue before composing the final comment.
+- Systematically evaluate confidence scoring for each candidate issue before assembling the inline comments and review submission.
 
 ---
 
@@ -149,10 +150,11 @@ gh pr view <pr_number_or_url> --json baseRefOid,headRefOid,title,body
 - Review the test changes first: What behavior do the tests expect? Are edge cases covered?
 - Summarize intent, touched modules, architectural impact, and critical paths.
 - Inspect the checked-out files directly for surrounding context.
+- Note exact file paths and line numbers modified in the diff for mapping inline review comments.
 
 ### 5. Parallel Multi-Perspective Deep Review (The Analytical Lenses)
 
-Analyze the pull request independently across these analytical lenses (via parallel subagents inheriting the checked-out workspace or dedicated sequential passes). Each lens flags candidate findings with file path, line range, description, and concrete evidence:
+Analyze the pull request independently across these analytical lenses (via parallel subagents inheriting the checked-out workspace or dedicated sequential passes). Each lens flags candidate findings with exact file path, diff line number (and `start_line` if multi-line), description, and concrete code replacement:
 
 #### Lens 1 — Repository Guidelines & Project Conventions
 - Audit changes against discovered instruction files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursorrules`, etc.).
@@ -267,68 +269,148 @@ Label all verified findings with clear severity prefixes so the author immediate
 
 ---
 
-## GitHub Review Comment Guidelines & Permalinks
+## GitHub PR Review & Inline Comment Guidelines
 
-### Comment Writing Rules
-- **Concise & Actionable:** Keep descriptions direct, crisp, and focused on solutions.
-- **No Decorative Emojis:** Do not use decorative emojis inside issue descriptions.
-- **Static Commit SHAs Only:** Never use dynamic shell syntax like `$(git rev-parse HEAD)` in markdown bodies. Resolve and write the static 40-character `headRefOid`.
-- **Accurate Permalinks:** Format permalinks with 1–2 lines of surrounding context:
-  `https://github.com/<owner>/<repo>/blob/<full_40_char_sha>/<filepath>#L<start>-L<end>`
+Instead of posting a single comment that tags or links to code blocks, submit **inline review comments directly on the modified diff lines** via GitHub's Pull Request Review API.
 
-### Comment Templates
+### Inline Comment Rules
+- **Direct Diff Attachment:** Attach each issue directly to the relevant file path (`path`) and line number (`line`) in the PR diff. For multi-line spans, specify `start_line` and `line` (`side: "RIGHT"`).
+- **Use Suggestion Blocks:** Whenever proposing a concrete fix or replacement, use GitHub's markdown suggestion syntax (```` ```suggestion ````) so the author can review and accept the change with a single click.
+- **Concise & Actionable:** Keep descriptions direct, crisp, and focused on solutions without decorative emojis or filler.
+- **High-Level Summary in Body:** The review `body` provides the overall summary and notes on architectural health, while line-specific findings are placed in the `comments` array. PR-wide findings that don't correspond to a specific diff line remain in the review `body`.
 
-#### Template A: When Issues Are Found
+### Inline Comment Format
+
+#### Format for Single-Line or Multi-Line Finding with Code Suggestion:
 
 ```markdown
-### Code review
+**Critical:** Memory leak caused by unremoved event listener on component unmount. (Violates resource cleanup guidelines)
 
-Found <N> issues:
-
-1. **Critical:** <brief description of issue> (<Guideline citation or bug explanation>)
-
-https://github.com/<owner>/<repo>/blob/<head_sha>/<filepath>#L<start>-L<end>
-
-*Suggested fix:* <concrete structural remedy or code snippet>
-
-2. <brief description of required issue> (<reason>)
-
-https://github.com/<owner>/<repo>/blob/<head_sha>/<filepath>#L<start>-L<end>
-
-3. **Consider:** <brief description of optional improvement> (<reason>)
-
-https://github.com/<owner>/<repo>/blob/<head_sha>/<filepath>#L<start>-L<end>
-
-🤖 Generated by Agent PR Review
+```suggestion
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [handleResize]);
+```
 ```
 
-#### Template B: When No Issues Are Found
+#### Format for Finding with Explanation / Structural Move:
 
 ```markdown
-### Code review
+**Consider:** Extract duplicated tax calculation into the canonical `calculateOrderTax` helper.
 
-No issues found. Checked for correctness, security, architecture, performance, regressions, git history, and repository guideline compliance.
+*Suggested fix:* Replace lines 45-52 with `const tax = calculateOrderTax(order.items, customer.jurisdiction);`
+```
+
+---
+
+## Review Payload Structure & Templates
+
+### 1. PR Review Submission Payload (JSON for `gh api`)
+
+When issues are found, structure the submission payload for `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews`:
+
+```json
+{
+  "commit_id": "<40_char_head_sha>",
+  "body": "### Code Review Summary\n\nFound 2 issues on modified lines across the PR.\n\n🤖 Generated by Agent PR Review",
+  "event": "COMMENT",
+  "comments": [
+    {
+      "path": "src/services/payment.ts",
+      "line": 42,
+      "side": "RIGHT",
+      "body": "**Critical:** Potential unhandled promise rejection if gateway times out.\n\n```suggestion\n  try {\n    return await paymentGateway.charge(params);\n  } catch (err) {\n    logger.error({ err, orderId: params.orderId }, \"Payment gateway charge failed\");\n    throw new PaymentProcessingError(\"Unable to complete transaction\", { cause: err });\n  }\n```"
+    },
+    {
+      "path": "src/utils/formatters.ts",
+      "start_line": 15,
+      "line": 18,
+      "side": "RIGHT",
+      "body": "**Consider:** Use canonical `formatCurrency` helper instead of bespoke string concatenation."
+    }
+  ]
+}
+```
+
+### 2. Review Body Template When No Issues Are Found
+
+When all lenses pass with 0 verified issues (score >= 80):
+
+```markdown
+### Code Review Summary
+
+No issues found. Verified for correctness, security, architecture, performance, regressions, git history, and repository guideline compliance.
 
 🤖 Generated by Agent PR Review
 ```
 
 ---
 
-## Post-Flight Check & Posting Review
+## Post-Flight Check & Submitting Review
 
 ### 6. Post-Flight Eligibility Recheck
-Before posting, re-verify that the PR remains open (or draft) and has not been concurrently merged or closed:
+Before submitting, re-verify that the PR remains open (or draft) and has not been concurrently merged or closed:
 
 ```bash
 gh pr view <pr_number_or_url> --json state,isDraft,headRefOid
 ```
 
-### 7. Post GitHub Review Comment
+### 7. Submit GitHub PR Review with Inline Comments
 
-Post the formatted comment:
+Submit the review payload containing the top-level summary and all inline comments in a single atomic review call.
+
+#### Option A: Submit Review with Inline Comments via `gh api`
+
+Extract the static 40-character `headRefOid` and submit the review with inline comments:
 
 ```bash
-gh pr comment <pr_number_or_url> --body "<formatted_comment>"
+# 1. Resolve PR number, repo, and head commit SHA
+HEAD_SHA=$(gh pr view <pr_number_or_url> --json headRefOid -q .headRefOid)
+
+# 2. Submit review with inline comments
+gh api repos/{owner}/{repo}/pulls/<pr_number>/reviews --input - << EOF
+{
+  "commit_id": "${HEAD_SHA}",
+  "body": "### Code Review Summary\n\nFound <N> verified issues on modified lines.\n\n🤖 Generated by Agent PR Review",
+  "event": "COMMENT",
+  "comments": [
+    {
+      "path": "<relative_file_path>",
+      "line": <diff_line_number>,
+      "side": "RIGHT",
+      "body": "<formatted_inline_comment_body>"
+    }
+  ]
+}
+EOF
+```
+
+*(Note: Use `event: "COMMENT"` for standard review or draft PRs. If the PR is ready for review and non-draft, `event: "REQUEST_CHANGES"` may be used when blocking/Critical issues are identified, or `event: "APPROVE"` when no blocking issues exist.)*
+
+#### Option B: Submitting Review When No Issues Found
+
+When no issues are found, submit a clean review directly:
+
+```bash
+gh pr review <pr_number_or_url> --comment -b "### Code Review Summary
+
+No issues found. Verified for correctness, security, architecture, performance, regressions, git history, and repository guideline compliance.
+
+🤖 Generated by Agent PR Review"
+```
+
+#### Option C: Posting Single Inline Comment (Standalone)
+
+If adding a single standalone inline comment outside a batch review:
+
+```bash
+gh api repos/{owner}/{repo}/pulls/<pr_number>/comments \
+  -f body="<inline_comment_body>" \
+  -f commit_id="${HEAD_SHA}" \
+  -f path="<relative_file_path>" \
+  -F line=<diff_line_number> \
+  -f side="RIGHT"
 ```
 
 ---
@@ -362,13 +444,14 @@ When resolving review disputes, apply this strict hierarchy:
 
 ### Final Verification Checklist
 
-Before finalizing the review comment:
+Before finalizing and submitting the review:
 - [ ] PR branch checked out directly in the working repository (`gh pr checkout`) without using git worktrees.
 - [ ] Context understood (PR intent, requirements, touched systems).
 - [ ] Diff size assessed (~100 / ~300 / ~1000 lines) and file size evaluated.
 - [ ] All 9 analytical lenses evaluated directly on the checked-out repository.
 - [ ] Confidence scoring applied to all findings (discarded all < 80).
 - [ ] Findings categorized by severity (`Critical:`, *(Required)*, `Consider:`, `Nit:`, `FYI`).
-- [ ] Permalinks use the static 40-character commit SHA (`headRefOid`) and context lines.
+- [ ] Line-specific findings formatted as inline comments with exact `path`, `line` (or `start_line`..`line`), and `side: "RIGHT"`.
+- [ ] Concrete replacement code formatted with GitHub ` ```suggestion ` blocks where applicable.
 - [ ] Structural remedies proposed for design and architectural issues.
-- [ ] PR state rechecked before posting comment via `gh pr comment`.
+- [ ] PR state and `headRefOid` rechecked before submitting review payload via `gh api` or `gh pr review`.
