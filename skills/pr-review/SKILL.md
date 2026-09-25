@@ -37,7 +37,8 @@ This skill is agent-agnostic and supports two execution models depending on the 
 
 ### 1. Subagent / Multi-Agent Harness (Antigravity, Gemini CLI, Claude Code, OpenAI Codex)
 - **Pre-Flight & Branch Checkout:** Check out the PR branch directly into the working directory (do not use worktrees). Run fast/lightweight models for pre-flight eligibility checks, repo instruction discovery, and initial diff summary.
-- **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models. Subagents inherit the workspace and inspect the checked-out repository directly without creating separate worktrees. Each subagent focuses deeply on its assigned dimension.
+- **Large Delta Validation Gate (>1,000 Lines):** Before subagents are dispatched, inspect the per-file line deltas (additions + deletions). Flag any file exceeding 1,000 lines of delta and prompt the user to decide whether to review or skip it. Pass the resulting exclusion list directly to all analytical review subagents.
+- **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models, explicitly instructing them on any excluded/skipped files confirmed by the user. Subagents inherit the workspace and inspect the checked-out repository directly without creating separate worktrees. Each subagent focuses deeply on its assigned dimension.
 - **Parallel Independent Verification:** Dispatch parallel verification subagents to evaluate and confidence-score candidate issues before aggregating findings into inline comments.
 
 ```
@@ -50,11 +51,18 @@ This skill is agent-agnostic and supports two execution models depending on the 
                   │ Repo Guidelines & Diff Context│
                   └───────────────┬───────────────┘
                                   │
+                  ┌───────────────┴───────────────┐
+                  │ Large Delta Validation        │
+                  │ (>1,000 lines delta per file) │
+                  │ Prompt user: Review or Skip?  │
+                  └───────────────┬───────────────┘
+                                  │ (Provide exclusions)
          ┌────────────────────────┼────────────────────────┐
          ▼                        ▼                        ▼
 ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
 │ Subagent Lens A │      │ Subagent Lens B │      │ Subagent Lens C │
 │  (Correctness)  │      │ (Architecture)  │      │   (Security)    │
+│ [Skip Excluded] │      │ [Skip Excluded] │      │ [Skip Excluded] │
 └────────┬────────┘      └────────┬────────┘      └────────┬────────┘
          │                        │                        │
          └────────────────────────┼────────────────────────┘
@@ -73,28 +81,28 @@ This skill is agent-agnostic and supports two execution models depending on the 
 ### 2. Single-Agent Harness (Cursor, Single-Session CLI)
 - Check out the PR branch directly in the working directory (no worktrees).
 - Run pre-flight checks, repository guideline discovery, and diff extraction.
-- Execute sequential analytical passes across each review lens in the current session.
+- Validate per-file deltas (>1,000 lines) and prompt the user whether to review or skip before proceeding.
+- Execute sequential analytical passes across each review lens in the current session (omitting skipped files).
 - Systematically evaluate confidence scoring for each candidate issue before assembling the inline comments and review submission.
 
 ---
 
-## Change Sizing & Splitting Discipline
+## Change Sizing & Internal Steering Discipline
 
-Small, focused changes are easier to review, faster to merge, and safer to deploy:
+Understanding change sizing is critical for directing review depth and budget:
 
 ```
 ~100 lines changed   → Good. Reviewable in one sitting.
 ~300 lines changed   → Acceptable if it's a single logical change.
-~1000 lines changed  → Too large. Ask the author to split it.
+~1000 lines changed  → Large change. Flag to the user internally to steer review scope.
 ```
 
-- **Watch Total File Size:** Around 1000 *total* lines in a single file is a clear inspection signal. When a change materially grows an already-large file, decompose helpers, subcomponents, or modules *first* before adding more.
-- **Separate Refactoring from Feature Work:** A change that refactors existing code and adds new behavior should be split into separate pull requests.
-- **Splitting Strategies:**
-  - **Stack:** Submit a small foundational PR, then build the next change on top of it.
-  - **By File Group:** Separate changes across independent subsystems needing different reviewers.
-  - **Horizontal:** Create shared core/stubs first, then build consumers.
-  - **Vertical:** Break into smaller full-stack slices of the feature.
+> [!IMPORTANT]
+> **Internal Steering Only — Never Complain to the Author About Change Size:**
+> Line delta thresholds and change sizing checks are strictly internal control gates to alert you (the user running the review) so you can steer the review scope and direct subagents. **Do NOT post review comments to GitHub telling the author that changes are too large, files have too much delta, or asking them to split the PR.**
+
+- **Large Delta Validation Gate (>1,000 Lines):** When any single file has a delta (additions + deletions) exceeding 1,000 lines, it often represents auto-generated output, schemas, lockfiles, data migrations, or massive refactorings. Always flag these files internally to the user before subagent dispatch to determine whether each file should be reviewed or skipped.
+- **Watch Total File Size:** Around 1000 *total* lines in a single file is an architectural signal. When reviewing additions to an already-large file, check whether new functionality should be factored into cohesive subcomponents or helpers rather than inflating an existing monolith.
 - **Change Descriptions:** Require a concise imperative first line ("Delete the FizzBuzz RPC", not "Deleting...") and an informative body explaining *what* and *why*, linking design docs, bug trackers, and benchmark results.
 
 ---
@@ -152,9 +160,59 @@ gh pr view <pr_number_or_url> --json baseRefOid,headRefOid,title,body
 - Inspect the checked-out files directly for surrounding context.
 - Note exact file paths and line numbers modified in the diff for mapping inline review comments.
 
-### 5. Parallel Multi-Perspective Deep Review (The Analytical Lenses)
+### 5. Large Delta Validation & Review Scope Confirmation (>1,000 Lines)
 
-Analyze the pull request independently across these analytical lenses (via parallel subagents inheriting the checked-out workspace or dedicated sequential passes). Each lens flags candidate findings with exact file path, diff line number (and `start_line` if multi-line), description, and concrete code replacement:
+Before starting the review and spinning off analytical subagents, inspect the delta scale of each modified file in the pull request:
+
+```bash
+# Option A: Query file additions and deletions via GitHub CLI
+gh pr view <pr_number_or_url> --json files --jq '.files[] | {path: .path, additions: .additions, deletions: .deletions, totalDelta: (.additions + .deletions)}'
+
+# Option B: Query local git diff numstat against the base branch
+git diff --numstat origin/<base_branch>...HEAD
+```
+
+#### Validation Procedure:
+
+1. **Calculate Per-File Delta:**
+   For every modified file in the PR diff, compute:
+   $$\text{Line Delta} = \text{Additions} + \text{Deletions}$$
+
+2. **Flag Files Over Threshold (>1,000 Lines):**
+   Identify all files where $\text{Line Delta} > 1,000$. These large deltas frequently indicate generated code, bundled assets, vendor dependencies, snapshots, lockfiles, or sweeping mechanical renames.
+
+3. **Prompt the User for Review vs. Skip Decisions (Internal Only — Do Not Post to Author):**
+   - This alert is **strictly internal between the agent and you (the user)** to steer the review pipeline. **No comment, warning, or feedback regarding delta size is ever posted to the PR or PR author.**
+   - If one or more files exceed 1,000 lines of delta, **pause before spinning off subagents**.
+   - Present the flagged files with their exact additions, deletions, and total delta.
+   - Prompt the user directly whether each flagged file should be **reviewed** or **skipped**:
+     > **Large Delta Validation (Internal Review Steering):**
+     > The following file(s) exceed 1,000 lines of delta:
+     > - `src/generated/types.ts`: +1,420 / -180 (1,600 total delta)
+     > - `data/fixtures/mock-data.json`: +3,100 / -0 (3,100 total delta)
+     >
+     > Would you like me to review or skip each of these files?
+
+4. **Incorporate User Decisions into Subagent Instructions:**
+   - Compile all files designated as **skipped** into an explicit exclusion list (`SKIPPED_FILES`).
+   - When dispatching each analytical lens subagent, inject the exclusion instructions:
+     ```markdown
+     **Skipped Files Directive:**
+     The user has confirmed to SKIP the following large-delta files (>1,000 lines):
+     - `src/generated/types.ts`
+     - `data/fixtures/mock-data.json`
+
+     Do NOT inspect these files, do NOT review their diffs, and do NOT flag any issues or generate inline comments for them. Focus your review exclusively on the remaining changed files.
+
+     **Author-Facing Feedback Rule:**
+     Do NOT tell the PR author that files were skipped or that changes are too large. Delta thresholds are strictly internal for user steering.
+     ```
+   - For files confirmed for **review**, include them in the subagent review scope as normal.
+   - If no files exceed 1,000 lines of delta, continue automatically to Step 6 without interrupting the user.
+
+### 6. Parallel Multi-Perspective Deep Review (The Analytical Lenses)
+
+Analyze the pull request independently across these analytical lenses (via parallel subagents inheriting the checked-out workspace or dedicated sequential passes). Subagents must be instructed to skip any files excluded during Step 5. Each lens flags candidate findings with exact file path, diff line number (and `start_line` if multi-line), description, and concrete code replacement:
 
 #### Lens 1 — Repository Guidelines & Project Conventions
 - Audit changes against discovered instruction files (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `.cursorrules`, etc.).
@@ -252,6 +310,7 @@ Always discard candidate issues that fall into these categories:
 4. **Unmandated quality commentary:** General commentary (e.g., "could add more tests") unless explicitly mandated by project guidelines.
 5. **Explicitly suppressed rules:** Code containing explicit lint-ignore comments (e.g., `// nolint`, `# noqa`, `@ts-ignore`).
 6. **Intentional functional changes:** Modifications that are central to the PR's stated objective.
+7. **Change size / PR scope commentary:** Issues or comments complaining that a file or PR is too large, has too many lines of delta, or asking the author to split the PR. Change sizing and delta checks are strictly internal control gates for the user to steer review scope, never author-facing review feedback.
 
 ---
 
@@ -349,14 +408,14 @@ No issues found. Verified for correctness, security, architecture, performance, 
 
 ## Post-Flight Check & Submitting Review
 
-### 6. Post-Flight Eligibility Recheck
+### 7. Post-Flight Eligibility Recheck
 Before submitting, re-verify that the PR remains open (or draft) and has not been concurrently merged or closed:
 
 ```bash
 gh pr view <pr_number_or_url> --json state,isDraft,headRefOid
 ```
 
-### 7. Submit GitHub PR Review with Inline Comments
+### 8. Submit GitHub PR Review with Inline Comments
 
 Submit the review payload containing the top-level summary and all inline comments in a single atomic review call.
 
@@ -448,7 +507,8 @@ Before finalizing and submitting the review:
 - [ ] PR branch checked out directly in the working repository (`gh pr checkout`) without using git worktrees.
 - [ ] Context understood (PR intent, requirements, touched systems).
 - [ ] Diff size assessed (~100 / ~300 / ~1000 lines) and file size evaluated.
-- [ ] All 9 analytical lenses evaluated directly on the checked-out repository.
+- [ ] Per-file delta validated (>1,000 lines flagged, user prompted to review or skip, subagents informed of skipped files).
+- [ ] All 9 analytical lenses evaluated directly on the checked-out repository (excluding skipped files).
 - [ ] Confidence scoring applied to all findings (discarded all < 80).
 - [ ] Findings categorized by severity (`Critical:`, *(Required)*, `Consider:`, `Nit:`, `FYI`).
 - [ ] Line-specific findings formatted as inline comments with exact `path`, `line` (or `start_line`..`line`), and `side: "RIGHT"`.
