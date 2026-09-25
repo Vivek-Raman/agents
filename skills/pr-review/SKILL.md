@@ -1,5 +1,5 @@
 ---
-name: review-pr
+name: pr-review
 description: Conduct high-signal, multi-perspective code review for pull requests (including draft PRs) with deep architectural, correctness, security, readability, and performance analysis, parallel subagent dispatch, rigorous confidence scoring, and inline diff comments via GitHub review API. Always checks out the PR branch directly in the current repository without using git worktrees.
 disable-model-invocation: true
 ---
