@@ -120,24 +120,8 @@ def parse_args():
     return args
 
 
-def is_work_directory(cwd=None):
-    if cwd is None:
-        target = Path.cwd()
-    else:
-        target = Path(cwd)
-    try:
-        work_dir = (Path.home() / "Documents" / "Work").resolve()
-        target_resolved = target.resolve()
-        return target_resolved == work_dir or work_dir in target_resolved.parents
-    except Exception:
-        return False
-
-
 def get_gh_env(cwd=None):
-    env = os.environ.copy()
-    if is_work_directory(cwd):
-        env["GH_CONFIG_DIR"] = str((Path.home() / ".config" / "gh-work").resolve())
-    return env
+    return os.environ.copy()
 
 
 def _format_gh_error(cmd, err):

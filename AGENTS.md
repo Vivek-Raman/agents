@@ -6,4 +6,3 @@
 - **No Test Runners or Caches**: Do not generate test caches (e.g., `.pytest_cache`), bytecode caches (`__pycache__`), or temporary test artifacts in the repository.
 - **Runtime-Only Packages**: Keep skill packages lightweight and containing only production runtime scripts required to execute the skills.
 - **Cross-Harness Compatibility**: Keep all skill definitions and helper scripts agent-agnostic so they work across all agent environments (Claude Code, OpenAI Codex, Gemini CLI / Antigravity, Cursor, etc.).
-- **Work Environment Configuration**: When operating within `~/Documents/Work` (or any of its subdirectories), ensure `GH_CONFIG_DIR=~/.config/gh-work` is set for all `gh` CLI invocations.

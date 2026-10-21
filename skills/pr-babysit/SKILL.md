@@ -49,8 +49,6 @@ Accept any of the following:
 
 Run the watcher script from the skill's `scripts/` directory (e.g. `scripts/gh_pr_watch.py` or `<path-to-skill>/scripts/gh_pr_watch.py` such as `~/.agents/skills/babysit-pr/scripts/gh_pr_watch.py` or `.agents/skills/babysit-pr/scripts/gh_pr_watch.py`):
 
-> **Environment Note**: When working inside `~/Documents/Work` (or any subdirectory), the environment variable `GH_CONFIG_DIR=~/.config/gh-work` is required for all `gh` CLI invocations. The watcher script automatically checks and sets this environment variable.
-
 ### One-shot snapshot
 
 ```bash
@@ -151,7 +149,7 @@ You have full authority to freely reply to comments and review threads on GitHub
 - To explicitly force a clean review state, pass `--fresh` / `--clean-state`.
 
 ## CI Failure Classification
-Use `gh` commands to inspect failed runs before deciding to rerun (remembering `GH_CONFIG_DIR=~/.config/gh-work` if executing manually under `~/Documents/Work`).
+Use `gh` commands to inspect failed runs before deciding to rerun.
 
 - `gh run view <run-id> --json jobs,name,workflowName,conclusion,status,url,headSha`
 - `gh api repos/<owner>/<repo>/actions/runs/<run-id>/jobs -X GET -f per_page=100`

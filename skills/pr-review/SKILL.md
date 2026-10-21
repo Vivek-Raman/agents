@@ -23,7 +23,6 @@ The review leverages direct branch checkout in the repository (without using git
 
 ## Environment & Prerequisites
 
-- **Work Environment Configuration**: When operating within `~/Documents/Work` (or any subdirectory), ensure `GH_CONFIG_DIR=~/.config/gh-work` is set for all `gh` CLI invocations.
 - **Branch Checkout Requirement**: Always check out the PR branch directly in the current repository before performing the review (`gh pr checkout <pr_number_or_url>`).
 - **Strict No-Worktrees Policy**: Never create or use `git worktree` (e.g., `git worktree add`). All file inspection, code analysis, git history checks, repository instruction discovery, and local test executions must run directly on the checked-out branch in the active workspace repository.
 - **CLI Tooling**: Use `gh` commands for all GitHub interactions (`gh pr checkout`, `gh pr view`, `gh pr diff`, `gh pr review`, `gh api`, `gh pr list`, `gh issue list`).

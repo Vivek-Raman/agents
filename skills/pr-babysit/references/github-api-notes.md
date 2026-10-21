@@ -1,13 +1,5 @@
 # GitHub CLI / API Notes For `babysit-pr`
 
-## Environment Configuration
-
-When operating inside `~/Documents/Work` (or any subfolder), all `gh` CLI invocations must use the work configuration directory:
-```bash
-GH_CONFIG_DIR=~/.config/gh-work
-```
-`scripts/gh_pr_watch.py` automatically detects when the current working directory is under `~/Documents/Work` and applies `GH_CONFIG_DIR=~/.config/gh-work` to all subprocess `gh` calls.
-
 ## Primary commands used
 
 ### PR metadata
