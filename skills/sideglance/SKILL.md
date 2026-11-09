@@ -1,9 +1,11 @@
 ---
-name: ctx-ppteer
-description: MUST ALWAYS invoke this skill for every task to keep ctx-ppteer's status window current with the active project, branch, and chat activity.
+name: sideglance
+description: MUST ALWAYS invoke this skill for every task to keep Sideglance's status window current with the active project, branch, and chat activity.
 ---
 
-# ctx-ppteer
+# Sideglance
+
+The installed skill and MCP server are named `sideglance`.
 
 Update your submission at the start of each task and whenever the activity or outcome materially changes. Read your existing record with `read_status` before writing changes with `write_status`. Make these updates quietly unless the user asks about them or an error requires user action.
 
@@ -25,3 +27,6 @@ Call `write_status` with the same project/session ID, the current branch, and yo
 Keep this as an editable account of your current work, not a message history.
 
 Keep text brief. Do not send Markdown syntax, commit hashes, or other revision identifiers in point text. Mention blockers only when critical and unresolved.
+
+Status points have stable IDs. Version 1 status files remain readable and migrate to version 2 on a successful write. Restart the app after external settings edits.
+When revising points returned by `read_status`, preserve each returned point `id`; do not invent IDs. New points receive IDs from the server.
