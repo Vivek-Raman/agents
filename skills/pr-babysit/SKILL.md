@@ -11,9 +11,19 @@ Keep working on an open PR until it is merged or closed, or progress needs a use
 
 Use the harness' GitHub tooling when it is available. Use its native PR monitoring or wake mechanism if it has one, and use its operations to read PR state, checks, comments, review threads, and mergeability, then reply, resolve threads, rerun checks, and push changes as needed.
 
-If the harness exposes no usable GitHub tooling, use the `gh` CLI. Read [GitHub CLI fallback](references/github-cli-fallback.md) before making `gh` API calls. Do not create a local watcher script or a detached polling process.
+For operations the harness does not support, use the `gh` CLI. Read [GitHub CLI fallback](references/github-cli-fallback.md) before making `gh` API calls. A native watch tool can handle monitoring while `gh` handles inspection and fixes. Do not create a local watcher script or a detached polling process.
 
 Accept the current branch's PR, a PR number, or a PR URL. If no PR is given, infer it from the current branch.
+
+## T3 Code monitoring
+
+When available, prefer T3 Code's `watch_pull_request` and `unwatch_pull_request` tools for monitoring. Discover the tools through the active environment and follow their current schemas. Other environments should use their native monitoring or the CLI fallback below.
+
+- Handle existing comments, review feedback, failed checks, and required branch updates before registering a watch. Finish any commit and push first.
+- Call `watch_pull_request` with the canonical PR URL, then end the turn with a brief status update. T3 wakes the thread when checks, comments, reviews, or conflicts need attention. Do not poll with sleep loops, `gh pr checks --watch`, or another watcher while T3 is watching.
+- On a wake, read fresh PR state and run the work loop. The watch persists across wakes and pushes, so do not register it again unless it was stopped. A wake is not permission to merge, and passing checks alone do not establish readiness.
+- Keep the watch active while waiting, including when the PR is green but still open. Ending a turn to await a wake does not end babysitting.
+- Call `unwatch_pull_request` when the PR is merged or closed, the user cancels monitoring, or a blocker requires handing the task back to the user. Re-register if the user later asks to resume.
 
 ## Work loop
 
@@ -29,7 +39,7 @@ Accept the current branch's PR, a PR number, or a PR URL. If no PR is given, inf
 4. After each push, reply, thread resolution, or rerun, refresh the PR state and continue monitoring.
 5. Stop only when the PR is merged or closed, or when the task needs user help. Report a persistent external CI failure, exhausted retry budget, missing permission, unrelated local changes, or a product decision that cannot be inferred safely.
 
-Use the harness' monitoring feature for ongoing work. If only `gh` is available, take fresh snapshots with it at a reasonable cadence and keep the active session attached. Do not leave a background watcher behind.
+Use the harness' monitoring feature for ongoing work, following the T3 Code lifecycle above when available. If no native monitoring is available, take fresh snapshots with `gh` at a reasonable cadence and keep the active session attached. Do not leave a background watcher behind.
 
 ## Safety and scope
 

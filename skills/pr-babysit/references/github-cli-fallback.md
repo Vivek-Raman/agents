@@ -1,6 +1,6 @@
 # GitHub CLI fallback
 
-Use these commands only when the active harness has no usable GitHub tooling.
+Use these commands for operations the active harness does not support. If T3 Code's watch tools are available, use them for monitoring even when inspection or fixes require `gh`.
 
 ## Inspect the PR
 
@@ -27,4 +27,4 @@ gh api repos/<owner>/<repo>/pulls/<pr>/comments/<comment-id>/replies -X POST -f 
 gh api graphql -f query='<resolveReviewThread mutation>' -F threadId=<thread-id>
 ```
 
-Use published comments and unresolved review threads as the source of truth. `gh pr checks --watch` can watch checks, but it does not replace fresh comment and review-thread reads.
+Use published comments and unresolved review threads as the source of truth. Without native monitoring, `gh pr checks --watch` can watch checks, but it does not replace fresh comment and review-thread reads. Do not run it alongside a T3 Code watch.
