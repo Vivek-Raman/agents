@@ -35,6 +35,7 @@ The review leverages direct branch checkout in the repository (without using git
 This skill is agent-agnostic and supports two execution models depending on the harness capabilities:
 
 ### 1. Subagent / Multi-Agent Harness (Antigravity, Gemini CLI, Claude Code, OpenAI Codex)
+- **T3 Code Delegation Preference:** When T3 Code's `delegate_task` tool is available in the session, prefer `delegate_task` (`mode: "async"`) over native subagent tools (`invoke_subagent`, `Agent`, `spawn_agent`) so T3 tracks child runs and wakes the parent turn automatically.
 - **Pre-Flight & Branch Checkout:** Check out the PR branch directly into the working directory (do not use worktrees). Run fast/lightweight models for pre-flight eligibility checks, repo instruction discovery, and initial diff summary.
 - **Large Delta Validation Gate (>1,000 Lines):** Before subagents are dispatched, inspect the per-file line deltas (additions + deletions). Flag any file exceeding 1,000 lines of delta and prompt the user to decide whether to review or skip it. Pass the resulting exclusion list directly to all analytical review subagents.
 - **Parallel Multi-Perspective Review:** Dispatch parallel subagents across the analytical review lenses using standard/capable models, explicitly instructing them on any excluded/skipped files confirmed by the user. Subagents inherit the workspace and inspect the checked-out repository directly without creating separate worktrees. Each subagent focuses deeply on its assigned dimension.

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Patch an Antigravity ACP server directory or the active T3 Code bundled runtime.
+"""Patch an Antigravity binary (`antigravity` or `agy`) or the active T3 Code release.
 
-Replaces `agy_acp_server.par` with a Python 3 stdio wrapper (moving the original
-binary to `agy_acp_server.real.par`) that intercepts ACP session lifecycle
-requests (`session/new`, `session/load`, `session/resume`, `session/fork`) to:
+Replaces the target executable with a Python 3 wrapper (moving the original
+binary to `<name>.real`). Non-ACP subcommands (`--version`, `login`, etc.)
+`execv` straight into `<name>.real`; `acp` sessions intercept JSON-RPC
+lifecycle requests (`session/new`, `session/load`, `session/resume`,
+`session/fork`) to:
 
-1. Propagate prefix-based workspace trust in `trusted_workspaces.json` so any
-   session directory (`cwd` or `additionalDirectories`) under a trusted parent
-   prefix (e.g. `~/.t3/worktrees`) is automatically recorded as trusted before
-   `agy_acp_server.real.par` performs its exact-match check.
-2. Inject workspace `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` files into
+1. Propagate prefix-based workspace trust in `trusted_workspaces.json` (respecting
+   `--gemini-dir` and `--app-data-dir` CLI flags as well as `$GEMINI_HOME` /
+   `~/.gemini`) so any session directory (`cwd` or `additionalDirectories`) under
+   a trusted prefix (e.g. `~/.t3/worktrees`) is automatically recorded as trusted.
+2. Inject `~/.gemini/GEMINI.md` and un-loaded workspace `CLAUDE.md` files (when
+   not symlinked to natively loaded `AGENTS.md`/`GEMINI.md`) into
    `params._meta.antigravity.systemPrompt.append`.
 3. Append user MCP servers from `~/.gemini/config/mcp_config.json` and
    `<workspace>/.gemini/mcp_config.json` into `params.mcpServers` on live chat
@@ -31,7 +34,7 @@ import shutil
 import sys
 
 WRAPPER_CODE = '''#!/usr/bin/env python3
-"""ACP stdio wrapper for agy_acp_server.par that enforces prefix-matched workspace trust, injects workspace AGENTS.md, user MCP servers, and disabled builtin tools."""
+"""ACP stdio wrapper for antigravity/agy that preserves non-ACP exec, enforces prefix-matched workspace trust, injects GEMINI.md/CLAUDE.md, user MCP servers, and disabled builtin tools."""
 
 import json
 import os
@@ -40,9 +43,56 @@ import subprocess
 import sys
 import tempfile
 
-RULE_FILENAMES = ("AGENTS.md", "CLAUDE.md", "GEMINI.md")
+NATIVE_RULE_FILENAMES = ("AGENTS.md", "GEMINI.md")
 SESSION_METHODS = ("session/new", "session/load", "session/resume", "session/fork")
 DISABLED_BUILTIN_TOOLS = ("run_workflow",)
+
+
+def _find_real_binary() -> str:
+    self_path = os.path.abspath(__file__)
+    here = os.path.dirname(self_path)
+    base = os.path.basename(self_path)
+    for name in (f"{base}.real", "antigravity.real", "agy.real"):
+        cand = os.path.join(here, name)
+        if os.path.isfile(cand):
+            return cand
+    raise FileNotFoundError(f"Could not locate real Antigravity binary beside {self_path}")
+
+
+def _parse_acp_flags(argv: list[str]) -> tuple[str | None, str]:
+    gemini_dir: str | None = None
+    app_data_dir = "antigravity-cli"
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        for flag in ("--gemini-dir", "--gemini_dir"):
+            if arg == flag and i + 1 < len(argv):
+                gemini_dir = argv[i + 1]
+                i += 1
+                break
+            if arg.startswith(flag + "="):
+                gemini_dir = arg.split("=", 1)[1]
+                break
+        else:
+            for flag in ("--app-data-dir", "--app_data_dir"):
+                if arg == flag and i + 1 < len(argv):
+                    app_data_dir = argv[i + 1]
+                    i += 1
+                    break
+                if arg.startswith(flag + "="):
+                    app_data_dir = arg.split("=", 1)[1]
+                    break
+        i += 1
+    return gemini_dir, app_data_dir
+
+
+def _is_acp_invocation(argv: list[str]) -> bool:
+    for arg in argv:
+        if arg == "acp":
+            return True
+        if not arg.startswith("-"):
+            return False
+    return False
 
 
 def _candidate_dirs(start_dir: str, home_dir: str) -> list[str]:
@@ -90,15 +140,31 @@ def _is_subpath(child: str, parent: str) -> bool:
         return False
 
 
-def _trusted_workspaces_paths() -> tuple[str, list[str]]:
+def _trusted_workspaces_paths(
+    gemini_dir_flag: str | None = None,
+    app_data_dir: str = "antigravity-cli",
+) -> tuple[str, list[str]]:
     default_home = os.path.join(os.path.expanduser("~"), ".gemini")
-    env_home = os.environ.get("GEMINI_HOME", "").strip()
-    active_home = os.path.expanduser(env_home) if env_home else default_home
-    active_path = os.path.join(active_home, "antigravity-acp", "trusted_workspaces.json")
-    fallback_path = os.path.join(default_home, "antigravity-acp", "trusted_workspaces.json")
-    source_paths = [active_path]
-    if os.path.abspath(fallback_path) != os.path.abspath(active_path):
-        source_paths.append(fallback_path)
+    if gemini_dir_flag:
+        active_home = os.path.abspath(os.path.expanduser(gemini_dir_flag))
+    else:
+        env_home = os.environ.get("GEMINI_HOME", "").strip()
+        active_home = os.path.expanduser(env_home) if env_home else default_home
+
+    active_path = os.path.join(active_home, app_data_dir, "trusted_workspaces.json")
+    candidates = [
+        active_path,
+        os.path.join(active_home, "antigravity-acp", "trusted_workspaces.json"),
+        os.path.join(default_home, "antigravity-acp", "trusted_workspaces.json"),
+        os.path.join(default_home, "antigravity-cli", "trusted_workspaces.json"),
+    ]
+    source_paths: list[str] = []
+    seen: set[str] = set()
+    for p in candidates:
+        ap = os.path.abspath(p)
+        if ap not in seen:
+            seen.add(ap)
+            source_paths.append(p)
     return active_path, source_paths
 
 
@@ -122,12 +188,16 @@ def _load_trust_file(path: str) -> tuple[list[str], list[str]]:
     )
 
 
-def _ensure_prefix_trusted_workspaces(params: dict) -> None:
+def _ensure_prefix_trusted_workspaces(
+    params: dict,
+    gemini_dir_flag: str | None = None,
+    app_data_dir: str = "antigravity-cli",
+) -> None:
     roots = _workspace_roots(params)
     if not roots:
         return
 
-    active_path, source_paths = _trusted_workspaces_paths()
+    active_path, source_paths = _trusted_workspaces_paths(gemini_dir_flag, app_data_dir)
     active_trusted, active_untrusted = _load_trust_file(active_path)
     trusted_set = set(active_trusted)
     untrusted_set = set(active_untrusted)
@@ -198,37 +268,57 @@ def _ensure_prefix_trusted_workspaces(params: dict) -> None:
 
 
 def _load_workspace_instructions(params: dict) -> str:
-    roots = _workspace_roots(params)
-    if not roots:
-        return ""
-
     home_dir = os.path.abspath(os.path.expanduser("~"))
     seen_dirs: set[str] = set()
     seen_files: set[str] = set()
     sections: list[str] = []
+
+    global_gemini = os.path.join(home_dir, ".gemini", "GEMINI.md")
+    if os.path.isfile(global_gemini):
+        try:
+            real_global = os.path.realpath(global_gemini)
+            with open(real_global, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            if content:
+                seen_files.add(real_global)
+                sections.append(
+                    f\'<global_instructions path="{global_gemini}">\\n{content}\\n</global_instructions>\'
+                )
+        except OSError:
+            pass
+
+    roots = _workspace_roots(params)
+    if not roots:
+        return "\\n\\n".join(sections)
 
     for root in roots:
         for d in _candidate_dirs(root, home_dir):
             if d in seen_dirs:
                 continue
             seen_dirs.add(d)
-            for fname in RULE_FILENAMES:
-                fpath = os.path.join(d, fname)
-                if not os.path.isfile(fpath):
+            for native_name in NATIVE_RULE_FILENAMES:
+                native_path = os.path.join(d, native_name)
+                if os.path.isfile(native_path):
+                    try:
+                        seen_files.add(os.path.realpath(native_path))
+                    except OSError:
+                        pass
+            fpath = os.path.join(d, "CLAUDE.md")
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                real_fpath = os.path.realpath(fpath)
+                if real_fpath in seen_files:
                     continue
-                try:
-                    real_fpath = os.path.realpath(fpath)
-                    if real_fpath in seen_files:
-                        continue
-                    with open(real_fpath, "r", encoding="utf-8") as f:
-                        content = f.read().strip()
-                    if content:
-                        seen_files.add(real_fpath)
-                        sections.append(
-                            f\'<workspace_instructions path="{fpath}">\\n{content}\\n</workspace_instructions>\'
-                        )
-                except OSError:
-                    continue
+                with open(real_fpath, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    seen_files.add(real_fpath)
+                    sections.append(
+                        f\'<workspace_instructions path="{fpath}">\\n{content}\\n</workspace_instructions>\'
+                    )
+            except OSError:
+                continue
 
     return "\\n\\n".join(sections)
 
@@ -326,7 +416,11 @@ def _load_user_mcp_servers(params: dict) -> list[dict]:
     return injected
 
 
-def _maybe_inject_session_params(raw_line: bytes) -> bytes:
+def _maybe_inject_session_params(
+    raw_line: bytes,
+    gemini_dir_flag: str | None = None,
+    app_data_dir: str = "antigravity-cli",
+) -> bytes:
     if not raw_line.startswith(b"{"):
         return raw_line
     try:
@@ -337,7 +431,7 @@ def _maybe_inject_session_params(raw_line: bytes) -> bytes:
         if not isinstance(params, dict):
             return raw_line
 
-        _ensure_prefix_trusted_workspaces(params)
+        _ensure_prefix_trusted_workspaces(params, gemini_dir_flag, app_data_dir)
 
         changed = False
         meta = params.get("_meta")
@@ -397,11 +491,15 @@ def _maybe_inject_session_params(raw_line: bytes) -> bytes:
 
 
 def main() -> int:
-    real_bin = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "agy_acp_server.real.par"
-    )
+    real_bin = _find_real_binary()
+    argv = sys.argv[1:]
+    if not _is_acp_invocation(argv):
+        os.execv(real_bin, [real_bin, *argv])
+
+    gemini_dir_flag, app_data_dir = _parse_acp_flags(argv)
+
     proc = subprocess.Popen(
-        [real_bin, *sys.argv[1:]],
+        [real_bin, *argv],
         stdin=subprocess.PIPE,
         stdout=sys.stdout,
         stderr=sys.stderr,
@@ -424,7 +522,11 @@ def main() -> int:
             raw_line = sys.stdin.buffer.readline()
             if not raw_line:
                 break
-            out_line = _maybe_inject_session_params(raw_line)
+            out_line = _maybe_inject_session_params(
+                raw_line,
+                gemini_dir_flag=gemini_dir_flag,
+                app_data_dir=app_data_dir,
+            )
             assert proc.stdin is not None
             proc.stdin.write(out_line)
             proc.stdin.flush()
@@ -465,7 +567,40 @@ def _default_platform_arch() -> str:
     return f"{os_name}-{arch}"
 
 
-def _resolve_configured_binary_dir(t3_home: str) -> tuple[str, str] | None:
+KNOWN_BINARIES = ("antigravity", "agy")
+
+
+def _real_binary_name(bin_name: str) -> str:
+    return f"{bin_name}.real"
+
+
+def _resolve_executable_name(version_dir: str, explicit_name: str | None = None) -> str:
+    if explicit_name:
+        return explicit_name
+    record_path = os.path.join(version_dir, ".install-complete.json")
+    if os.path.isfile(record_path):
+        try:
+            with open(record_path, "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            exe = rec.get("executable") if isinstance(rec, dict) else None
+            name = exe.get("name") if isinstance(exe, dict) else None
+            if isinstance(name, str) and name.strip():
+                clean_name = name.strip()
+                if os.path.exists(os.path.join(version_dir, clean_name)) or os.path.exists(
+                    os.path.join(version_dir, _real_binary_name(clean_name))
+                ):
+                    return clean_name
+        except (OSError, ValueError):
+            pass
+    for candidate in KNOWN_BINARIES:
+        if os.path.exists(os.path.join(version_dir, candidate)) or os.path.exists(
+            os.path.join(version_dir, _real_binary_name(candidate))
+        ):
+            return candidate
+    return "antigravity"
+
+
+def _resolve_configured_binary_dir(t3_home: str) -> tuple[str, str, str | None] | None:
     for rel_settings in (os.path.join("userdata", "settings.json"), "settings.json"):
         settings_path = os.path.join(t3_home, rel_settings)
         if not os.path.isfile(settings_path):
@@ -487,15 +622,14 @@ def _resolve_configured_binary_dir(t3_home: str) -> tuple[str, str] | None:
             bin_path = cfg.get("binaryPath") if isinstance(cfg, dict) else None
             if isinstance(bin_path, str) and bin_path.strip():
                 expanded = os.path.abspath(os.path.expanduser(bin_path.strip()))
-                target_dir = (
-                    os.path.dirname(expanded) if os.path.isfile(expanded) else expanded
-                )
-                if os.path.isdir(target_dir):
-                    return str(inst_id), target_dir
+                if os.path.isfile(expanded):
+                    return str(inst_id), os.path.dirname(expanded), os.path.basename(expanded)
+                if os.path.isdir(expanded):
+                    return str(inst_id), expanded, None
     return None
 
 
-def _resolve_t3_version_dir(t3_home: str, release_id: str | None) -> tuple[str, str]:
+def _resolve_t3_version_dir(t3_home: str, release_id: str | None) -> tuple[str, str, str | None]:
     arch = _default_platform_arch()
     candidate_bases = [
         os.path.join(t3_home, "tools", "antigravity-acp", arch),
@@ -517,15 +651,17 @@ def _resolve_t3_version_dir(t3_home: str, release_id: str | None) -> tuple[str, 
     version_dir = os.path.join(base_dir, "versions", release_id)
     if not os.path.isdir(version_dir):
         raise FileNotFoundError(f"Version directory does not exist: {version_dir}")
-    return release_id, version_dir
+    return release_id, version_dir, None
 
 
 def _resolve_target_dir(
     target_path: str | None, t3_home: str, release_id: str | None
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     if target_path and target_path.strip().lower() not in ("active", "t3", "t3-active"):
         expanded = os.path.abspath(os.path.expanduser(target_path.strip()))
+        explicit_name: str | None = None
         if os.path.isfile(expanded):
+            explicit_name = os.path.basename(expanded)
             expanded = os.path.dirname(expanded)
         if not os.path.isdir(expanded):
             raise FileNotFoundError(f"Target directory does not exist: {expanded}")
@@ -533,9 +669,14 @@ def _resolve_target_dir(
         # If pointed at a parent directory containing active.json + versions/
         active_file = os.path.join(expanded, "active.json")
         versions_dir = os.path.join(expanded, "versions")
+        has_direct_bin = any(
+            os.path.exists(os.path.join(expanded, name))
+            or os.path.exists(os.path.join(expanded, _real_binary_name(name)))
+            for name in KNOWN_BINARIES
+        )
         if (
-            not os.path.exists(os.path.join(expanded, "agy_acp_server.par"))
-            and not os.path.exists(os.path.join(expanded, "agy_acp_server.real.par"))
+            explicit_name is None
+            and not has_direct_bin
             and os.path.isfile(active_file)
             and os.path.isdir(versions_dir)
         ):
@@ -546,16 +687,21 @@ def _resolve_target_dir(
                 raise FileNotFoundError(
                     f"Version directory does not exist: {resolved_dir}"
                 )
-            return rel_id, resolved_dir
+            return rel_id, resolved_dir, _resolve_executable_name(resolved_dir)
 
-        return os.path.basename(expanded), expanded
+        return (
+            os.path.basename(expanded),
+            expanded,
+            _resolve_executable_name(expanded, explicit_name),
+        )
 
-    return _resolve_t3_version_dir(t3_home, release_id)
+    label, resolved_dir, explicit_name = _resolve_t3_version_dir(t3_home, release_id)
+    return label, resolved_dir, _resolve_executable_name(resolved_dir, explicit_name)
 
 
-def patch_directory(version_dir: str, label: str) -> None:
-    bin_path = os.path.join(version_dir, "agy_acp_server.par")
-    real_bin_path = os.path.join(version_dir, "agy_acp_server.real.par")
+def patch_directory(version_dir: str, label: str, bin_name: str) -> None:
+    bin_path = os.path.join(version_dir, bin_name)
+    real_bin_path = os.path.join(version_dir, _real_binary_name(bin_name))
     record_path = os.path.join(version_dir, ".install-complete.json")
     record_bak_path = os.path.join(version_dir, ".install-complete.json.bak")
 
@@ -592,9 +738,9 @@ def patch_directory(version_dir: str, label: str) -> None:
     )
 
 
-def restore_directory(version_dir: str, label: str) -> None:
-    bin_path = os.path.join(version_dir, "agy_acp_server.par")
-    real_bin_path = os.path.join(version_dir, "agy_acp_server.real.par")
+def restore_directory(version_dir: str, label: str, bin_name: str) -> None:
+    bin_path = os.path.join(version_dir, bin_name)
+    real_bin_path = os.path.join(version_dir, _real_binary_name(bin_name))
     record_path = os.path.join(version_dir, ".install-complete.json")
     record_bak_path = os.path.join(version_dir, ".install-complete.json.bak")
 
@@ -615,12 +761,13 @@ def restore_directory(version_dir: str, label: str) -> None:
             json.dump(rec, f, separators=(",", ":"))
             f.write("\n")
 
-    print(f"Restored original Antigravity ACP binary in {version_dir} ({label}).")
+    print(f"Restored original Antigravity binary in {version_dir} ({label}).")
 
 
-def status_directory(version_dir: str, label: str) -> None:
-    bin_path = os.path.join(version_dir, "agy_acp_server.par")
-    real_bin_path = os.path.join(version_dir, "agy_acp_server.real.par")
+def status_directory(version_dir: str, label: str, bin_name: str) -> None:
+    bin_path = os.path.join(version_dir, bin_name)
+    real_bin_name = _real_binary_name(bin_name)
+    real_bin_path = os.path.join(version_dir, real_bin_name)
     record_path = os.path.join(version_dir, ".install-complete.json")
 
     is_patched = os.path.exists(real_bin_path)
@@ -638,9 +785,10 @@ def status_directory(version_dir: str, label: str) -> None:
     print(
         f"Antigravity ACP status ({version_str}, {label}):\n"
         f"  directory: {version_dir}\n"
+        f"  executable: {bin_name}\n"
         f"  patched: {is_patched}\n"
-        f"  agy_acp_server.par size: {bin_size}\n"
-        f"  agy_acp_server.real.par size: {real_size}\n"
+        f"  {bin_name} size: {bin_size}\n"
+        f"  {real_bin_name} size: {real_size}\n"
         f"  .install-complete.json bytes: {rec_bytes}"
     )
 
@@ -651,18 +799,18 @@ def main() -> int:
         "target",
         nargs="?",
         default=None,
-        help="Path to an agy_acp_server directory (or 'active' for the active T3 Code release)",
+        help="Path to an Antigravity binary/directory (or 'active' for the active T3 Code release)",
     )
     parser.add_argument(
         "--target-dir",
         dest="target_dir",
         default=None,
-        help="Explicit path to an agy_acp_server directory",
+        help="Explicit path to an Antigravity binary or directory",
     )
     parser.add_argument(
         "--active",
         action="store_true",
-        help="Target the active T3 Code bundled agy_acp_server release (default when no path is given)",
+        help="Target the active T3 Code bundled Antigravity release (default when no path is given)",
     )
     parser.add_argument(
         "--t3-home",
@@ -677,7 +825,7 @@ def main() -> int:
     parser.add_argument(
         "--restore",
         action="store_true",
-        help="Restore the original unpatched agy_acp_server.par binary",
+        help="Restore the original unpatched Antigravity binary",
     )
     parser.add_argument(
         "--status",
@@ -687,15 +835,15 @@ def main() -> int:
     args = parser.parse_args()
 
     chosen_target = args.target_dir or ("active" if args.active else args.target)
-    label, version_dir = _resolve_target_dir(
+    label, version_dir, bin_name = _resolve_target_dir(
         chosen_target, os.path.expanduser(args.t3_home), args.release_id
     )
     if args.status:
-        status_directory(version_dir, label)
+        status_directory(version_dir, label, bin_name)
     elif args.restore:
-        restore_directory(version_dir, label)
+        restore_directory(version_dir, label, bin_name)
     else:
-        patch_directory(version_dir, label)
+        patch_directory(version_dir, label, bin_name)
     return 0
 
 

@@ -19,8 +19,8 @@ Accept the current branch's PR, a PR number, or a PR URL. If no PR is given, inf
 
 When available, prefer T3 Code's `watch_pull_request` and `unwatch_pull_request` tools for monitoring. Discover the tools through the active environment and follow their current schemas. Other environments should use their native monitoring or the CLI fallback below.
 
-- Handle existing comments, review feedback, failed checks, and required branch updates before registering a watch. Finish any commit and push first.
-- Call `watch_pull_request` with the canonical PR URL, then end the turn with a brief status update. T3 wakes the thread when checks, comments, reviews, or conflicts need attention. Do not poll with sleep loops, `gh pr checks --watch`, or another watcher while T3 is watching.
+- Handle existing comments, review feedback, failed checks, and required branch updates before registering a watch. Finish any commit and push **in-turn** (never end a turn while a backgrounded shell/push task is still running) before registering the watch.
+- Call `watch_pull_request` with the canonical PR URL, then end the turn with a brief status update. T3 wakes the thread when checks, comments, reviews, or conflicts need attention. Do not poll with `schedule`, `manage_task` loops, sleep loops, `gh pr checks --watch`, or another watcher while T3 is watching.
 - On a wake, read fresh PR state and run the work loop. The watch persists across wakes and pushes, so do not register it again unless it was stopped. A wake is not permission to merge, and passing checks alone do not establish readiness.
 - Keep the watch active while waiting, including when the PR is green but still open. Ending a turn to await a wake does not end babysitting.
 - Call `unwatch_pull_request` when the PR is merged or closed, the user cancels monitoring, or a blocker requires handing the task back to the user. Re-register if the user later asks to resume.
