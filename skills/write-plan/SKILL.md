@@ -57,5 +57,3 @@ Repeat review only after a substantive edit or new evidence. A user decision tha
 - A bare "run tests" step does not establish the changed behavior. Name the acceptance scenario and expected result.
 - Publishing slices without native blocker relations leaves the execution queue unaware of dependencies.
 - A plan written for a prior revision can name moved files. Verify consequential paths and interfaces against the current checkout.
-
-Maintenance only: `evals/evals.json` contains regression scenarios for changes to this skill; it does not load during a user task.

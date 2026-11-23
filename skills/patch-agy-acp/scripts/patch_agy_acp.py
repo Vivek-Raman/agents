@@ -7,21 +7,12 @@ binary to `<name>.real`). Non-ACP subcommands (`--version`, `login`, etc.)
 lifecycle requests (`session/new`, `session/load`, `session/resume`,
 `session/fork`) to:
 
-1. Propagate prefix-based workspace trust in `trusted_workspaces.json` (respecting
-   `--gemini-dir` and `--app-data-dir` CLI flags as well as `$GEMINI_HOME` /
-   `~/.gemini`) so any session directory (`cwd` or `additionalDirectories`) under
-   a trusted prefix (e.g. `~/.t3/worktrees`) is automatically recorded as trusted.
-2. Inject `~/.gemini/GEMINI.md` and un-loaded workspace `CLAUDE.md` files (when
-   not symlinked to natively loaded `AGENTS.md`/`GEMINI.md`) into
-   `params._meta.antigravity.systemPrompt.append`.
-3. Append user MCP servers from `~/.gemini/config/mcp_config.json` and
+1. Append enabled user MCP servers from `~/.gemini/config/mcp_config.json` and
    `<workspace>/.gemini/mcp_config.json` into `params.mcpServers` on live chat
    sessions (skipping empty-MCP probe and text-generation sessions).
-4. Add `run_workflow` to `params._meta.antigravity.disabledTools` so
-   `localharness` does not materialize `skills/system/run-workflow/SKILL.md`
-   inside project workspaces.
-5. Update `executable.bytes` in `.install-complete.json` when present so T3
-   Code's `AntigravityInstallation.completedRelease` size check passes.
+2. Update `executable.bytes` in `.install-complete.json` when present (handling
+   T3 Code's read-only release directory lock permissions) so
+   `AntigravityInstallation.completedRelease` passes.
 """
 
 from __future__ import annotations
@@ -31,21 +22,19 @@ import json
 import os
 import platform
 import shutil
+import stat
 import sys
 
 WRAPPER_CODE = '''#!/usr/bin/env python3
-"""ACP stdio wrapper for antigravity/agy that preserves non-ACP exec, enforces prefix-matched workspace trust, injects GEMINI.md/CLAUDE.md, user MCP servers, and disabled builtin tools."""
+"""ACP stdio wrapper for antigravity/agy: non-ACP exec passthrough and user MCP server merging."""
 
 import json
 import os
 import signal
 import subprocess
 import sys
-import tempfile
 
-NATIVE_RULE_FILENAMES = ("AGENTS.md", "GEMINI.md")
 SESSION_METHODS = ("session/new", "session/load", "session/resume", "session/fork")
-DISABLED_BUILTIN_TOOLS = ("run_workflow",)
 
 
 def _find_real_binary() -> str:
@@ -59,33 +48,6 @@ def _find_real_binary() -> str:
     raise FileNotFoundError(f"Could not locate real Antigravity binary beside {self_path}")
 
 
-def _parse_acp_flags(argv: list[str]) -> tuple[str | None, str]:
-    gemini_dir: str | None = None
-    app_data_dir = "antigravity-cli"
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        for flag in ("--gemini-dir", "--gemini_dir"):
-            if arg == flag and i + 1 < len(argv):
-                gemini_dir = argv[i + 1]
-                i += 1
-                break
-            if arg.startswith(flag + "="):
-                gemini_dir = arg.split("=", 1)[1]
-                break
-        else:
-            for flag in ("--app-data-dir", "--app_data_dir"):
-                if arg == flag and i + 1 < len(argv):
-                    app_data_dir = argv[i + 1]
-                    i += 1
-                    break
-                if arg.startswith(flag + "="):
-                    app_data_dir = arg.split("=", 1)[1]
-                    break
-        i += 1
-    return gemini_dir, app_data_dir
-
-
 def _is_acp_invocation(argv: list[str]) -> bool:
     for arg in argv:
         if arg == "acp":
@@ -93,26 +55,6 @@ def _is_acp_invocation(argv: list[str]) -> bool:
         if not arg.startswith("-"):
             return False
     return False
-
-
-def _candidate_dirs(start_dir: str, home_dir: str) -> list[str]:
-    cur = os.path.abspath(start_dir)
-    if not os.path.isdir(cur):
-        return []
-    chain: list[str] = []
-    found_git = False
-    while True:
-        if cur == home_dir or cur == os.path.dirname(cur):
-            break
-        chain.append(cur)
-        if os.path.exists(os.path.join(cur, ".git")):
-            found_git = True
-            break
-        cur = os.path.dirname(cur)
-    if not found_git:
-        chain = chain[:2]
-    chain.reverse()
-    return chain
 
 
 def _workspace_roots(params: dict) -> list[str]:
@@ -127,200 +69,6 @@ def _workspace_roots(params: dict) -> list[str]:
                 if isinstance(item, str) and item.strip():
                     roots.append(item.strip())
     return roots
-
-
-def _canonical_path(path: str) -> str:
-    return os.path.abspath(os.path.realpath(os.path.expanduser(path)))
-
-
-def _is_subpath(child: str, parent: str) -> bool:
-    try:
-        return os.path.commonpath([child, parent]) == parent
-    except ValueError:
-        return False
-
-
-def _trusted_workspaces_paths(
-    gemini_dir_flag: str | None = None,
-    app_data_dir: str = "antigravity-cli",
-) -> tuple[str, list[str]]:
-    default_home = os.path.join(os.path.expanduser("~"), ".gemini")
-    if gemini_dir_flag:
-        active_home = os.path.abspath(os.path.expanduser(gemini_dir_flag))
-    else:
-        env_home = os.environ.get("GEMINI_HOME", "").strip()
-        active_home = os.path.expanduser(env_home) if env_home else default_home
-
-    active_path = os.path.join(active_home, app_data_dir, "trusted_workspaces.json")
-    candidates = [
-        active_path,
-        os.path.join(active_home, "antigravity-acp", "trusted_workspaces.json"),
-        os.path.join(default_home, "antigravity-acp", "trusted_workspaces.json"),
-        os.path.join(default_home, "antigravity-cli", "trusted_workspaces.json"),
-    ]
-    source_paths: list[str] = []
-    seen: set[str] = set()
-    for p in candidates:
-        ap = os.path.abspath(p)
-        if ap not in seen:
-            seen.add(ap)
-            source_paths.append(p)
-    return active_path, source_paths
-
-
-def _load_trust_file(path: str) -> tuple[list[str], list[str]]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return [], []
-    if not isinstance(data, dict):
-        return [], []
-    trusted = data.get("trusted", [])
-    untrusted = data.get("untrusted", [])
-    return (
-        [p for p in trusted if isinstance(p, str) and p.strip()]
-        if isinstance(trusted, list)
-        else [],
-        [p for p in untrusted if isinstance(p, str) and p.strip()]
-        if isinstance(untrusted, list)
-        else [],
-    )
-
-
-def _ensure_prefix_trusted_workspaces(
-    params: dict,
-    gemini_dir_flag: str | None = None,
-    app_data_dir: str = "antigravity-cli",
-) -> None:
-    roots = _workspace_roots(params)
-    if not roots:
-        return
-
-    active_path, source_paths = _trusted_workspaces_paths(gemini_dir_flag, app_data_dir)
-    active_trusted, active_untrusted = _load_trust_file(active_path)
-    trusted_set = set(active_trusted)
-    untrusted_set = set(active_untrusted)
-
-    all_trusted_prefixes: set[str] = set()
-    all_untrusted_prefixes: set[str] = set()
-    for src in source_paths:
-        t_list, u_list = (
-            (active_trusted, active_untrusted)
-            if src == active_path
-            else _load_trust_file(src)
-        )
-        for p in t_list:
-            all_trusted_prefixes.add(_canonical_path(p))
-            all_trusted_prefixes.add(os.path.abspath(os.path.expanduser(p)))
-        for p in u_list:
-            all_untrusted_prefixes.add(_canonical_path(p))
-            all_untrusted_prefixes.add(os.path.abspath(os.path.expanduser(p)))
-
-    if not all_trusted_prefixes:
-        return
-
-    modified = False
-    for root in roots:
-        canonical = _canonical_path(root)
-        if canonical in trusted_set or canonical in untrusted_set:
-            continue
-
-        best_trusted_len = max(
-            (len(p) for p in all_trusted_prefixes if _is_subpath(canonical, p)),
-            default=-1,
-        )
-        best_untrusted_len = max(
-            (len(p) for p in all_untrusted_prefixes if _is_subpath(canonical, p)),
-            default=-1,
-        )
-        if best_trusted_len > best_untrusted_len and best_trusted_len >= 0:
-            trusted_set.add(canonical)
-            modified = True
-
-    if not modified:
-        return
-
-    target_dir = os.path.dirname(active_path)
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(
-            dir=target_dir, prefix=".trusted_workspaces_", suffix=".tmp"
-        )
-        try:
-            with open(temp_fd, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "trusted": sorted(trusted_set),
-                        "untrusted": sorted(untrusted_set),
-                    },
-                    f,
-                    indent=2,
-                )
-            os.replace(temp_path, active_path)
-        except Exception:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-    except OSError:
-        pass
-
-
-def _load_workspace_instructions(params: dict) -> str:
-    home_dir = os.path.abspath(os.path.expanduser("~"))
-    seen_dirs: set[str] = set()
-    seen_files: set[str] = set()
-    sections: list[str] = []
-
-    global_gemini = os.path.join(home_dir, ".gemini", "GEMINI.md")
-    if os.path.isfile(global_gemini):
-        try:
-            real_global = os.path.realpath(global_gemini)
-            with open(real_global, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-            if content:
-                seen_files.add(real_global)
-                sections.append(
-                    f\'<global_instructions path="{global_gemini}">\\n{content}\\n</global_instructions>\'
-                )
-        except OSError:
-            pass
-
-    roots = _workspace_roots(params)
-    if not roots:
-        return "\\n\\n".join(sections)
-
-    for root in roots:
-        for d in _candidate_dirs(root, home_dir):
-            if d in seen_dirs:
-                continue
-            seen_dirs.add(d)
-            for native_name in NATIVE_RULE_FILENAMES:
-                native_path = os.path.join(d, native_name)
-                if os.path.isfile(native_path):
-                    try:
-                        seen_files.add(os.path.realpath(native_path))
-                    except OSError:
-                        pass
-            fpath = os.path.join(d, "CLAUDE.md")
-            if not os.path.isfile(fpath):
-                continue
-            try:
-                real_fpath = os.path.realpath(fpath)
-                if real_fpath in seen_files:
-                    continue
-                with open(real_fpath, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    seen_files.add(real_fpath)
-                    sections.append(
-                        f\'<workspace_instructions path="{fpath}">\\n{content}\\n</workspace_instructions>\'
-                    )
-            except OSError:
-                continue
-
-    return "\\n\\n".join(sections)
 
 
 def _load_user_mcp_servers(params: dict) -> list[dict]:
@@ -416,11 +164,7 @@ def _load_user_mcp_servers(params: dict) -> list[dict]:
     return injected
 
 
-def _maybe_inject_session_params(
-    raw_line: bytes,
-    gemini_dir_flag: str | None = None,
-    app_data_dir: str = "antigravity-cli",
-) -> bytes:
+def _maybe_inject_session_params(raw_line: bytes) -> bytes:
     if not raw_line.startswith(b"{"):
         return raw_line
     try:
@@ -431,60 +175,11 @@ def _maybe_inject_session_params(
         if not isinstance(params, dict):
             return raw_line
 
-        _ensure_prefix_trusted_workspaces(params, gemini_dir_flag, app_data_dir)
-
-        changed = False
-        meta = params.get("_meta")
-        if not isinstance(meta, dict):
-            meta = {}
-            params["_meta"] = meta
-        ag = meta.get("antigravity")
-        if not isinstance(ag, dict):
-            ag = {}
-            meta["antigravity"] = ag
-
-        disabled_tools = ag.get("disabledTools")
-        if not isinstance(disabled_tools, list):
-            disabled_tools = []
-            ag["disabledTools"] = disabled_tools
-            changed = True
-        for tool_name in DISABLED_BUILTIN_TOOLS:
-            if tool_name not in disabled_tools:
-                disabled_tools.append(tool_name)
-                changed = True
-
-        enabled_tools = ag.get("enabledTools")
-        if isinstance(enabled_tools, list):
-            filtered_enabled = [
-                t for t in enabled_tools if t not in DISABLED_BUILTIN_TOOLS
-            ]
-            if len(filtered_enabled) != len(enabled_tools):
-                ag["enabledTools"] = filtered_enabled
-                changed = True
-
-        injected_prompt = _load_workspace_instructions(params)
-        if injected_prompt:
-            sp = ag.get("systemPrompt")
-            if not isinstance(sp, dict):
-                sp = {}
-                ag["systemPrompt"] = sp
-
-            existing = sp.get("append")
-            if isinstance(existing, str) and existing.strip():
-                if injected_prompt not in existing:
-                    sp["append"] = f"{existing.rstrip()}\\n\\n{injected_prompt}"
-                    changed = True
-            else:
-                sp["append"] = injected_prompt
-                changed = True
-
         extra_mcp = _load_user_mcp_servers(params)
-        if extra_mcp:
-            params["mcpServers"] = [*params["mcpServers"], *extra_mcp]
-            changed = True
-
-        if not changed:
+        if not extra_mcp:
             return raw_line
+
+        params["mcpServers"] = [*params["mcpServers"], *extra_mcp]
         return (json.dumps(msg, separators=(",", ":")) + "\\n").encode("utf-8")
     except Exception:
         return raw_line
@@ -495,8 +190,6 @@ def main() -> int:
     argv = sys.argv[1:]
     if not _is_acp_invocation(argv):
         os.execv(real_bin, [real_bin, *argv])
-
-    gemini_dir_flag, app_data_dir = _parse_acp_flags(argv)
 
     proc = subprocess.Popen(
         [real_bin, *argv],
@@ -522,11 +215,7 @@ def main() -> int:
             raw_line = sys.stdin.buffer.readline()
             if not raw_line:
                 break
-            out_line = _maybe_inject_session_params(
-                raw_line,
-                gemini_dir_flag=gemini_dir_flag,
-                app_data_dir=app_data_dir,
-            )
+            out_line = _maybe_inject_session_params(raw_line)
             assert proc.stdin is not None
             proc.stdin.write(out_line)
             proc.stdin.flush()
@@ -699,35 +388,75 @@ def _resolve_target_dir(
     return label, resolved_dir, _resolve_executable_name(resolved_dir, explicit_name)
 
 
+def _is_dir_locked(directory: str) -> bool:
+    if os.name == "nt":
+        return False
+    return (stat.S_IMODE(os.stat(directory).st_mode) & stat.S_IWUSR) == 0
+
+
+def _unlock_for_write(version_dir: str, paths: tuple[str, ...]) -> bool:
+    """Temporarily add owner write bits so T3's 0500/0555/0400 lock permits patching."""
+    if os.name == "nt":
+        return False
+    was_locked = _is_dir_locked(version_dir)
+    dir_mode = stat.S_IMODE(os.stat(version_dir).st_mode)
+    if (dir_mode & stat.S_IWUSR) == 0:
+        os.chmod(version_dir, dir_mode | stat.S_IRWXU)
+    for p in paths:
+        if os.path.exists(p) and not os.path.islink(p):
+            mode = stat.S_IMODE(os.stat(p).st_mode)
+            if (mode & stat.S_IWUSR) == 0:
+                os.chmod(p, mode | stat.S_IWUSR)
+    return was_locked
+
+
+def _relock_release(version_dir: str, bin_path: str, record_path: str) -> None:
+    """Restore T3 Code's read-only release lock (0500 dir, 0555 bin, 0400 record)."""
+    if os.name == "nt":
+        return
+    if os.path.isfile(bin_path) and not os.path.islink(bin_path):
+        os.chmod(bin_path, 0o555)
+    if os.path.isfile(record_path) and not os.path.islink(record_path):
+        os.chmod(record_path, 0o400)
+    os.chmod(version_dir, 0o500)
+
+
 def patch_directory(version_dir: str, label: str, bin_name: str) -> None:
     bin_path = os.path.join(version_dir, bin_name)
     real_bin_path = os.path.join(version_dir, _real_binary_name(bin_name))
     record_path = os.path.join(version_dir, ".install-complete.json")
     record_bak_path = os.path.join(version_dir, ".install-complete.json.bak")
 
-    if not os.path.exists(real_bin_path):
-        if not os.path.exists(bin_path):
-            raise FileNotFoundError(f"Missing binary at {bin_path}")
-        shutil.move(bin_path, real_bin_path)
+    was_locked = _unlock_for_write(
+        version_dir, (bin_path, real_bin_path, record_path, record_bak_path)
+    )
+    try:
+        if not os.path.exists(real_bin_path):
+            if not os.path.exists(bin_path):
+                raise FileNotFoundError(f"Missing binary at {bin_path}")
+            shutil.move(bin_path, real_bin_path)
 
-    if not os.path.exists(record_bak_path) and os.path.isfile(record_path):
-        shutil.copy2(record_path, record_bak_path)
+        if not os.path.exists(record_bak_path) and os.path.isfile(record_path):
+            shutil.copy2(record_path, record_bak_path)
 
-    with open(bin_path, "w", encoding="utf-8") as f:
-        f.write(WRAPPER_CODE)
-    os.chmod(bin_path, 0o755)
+        with open(bin_path, "w", encoding="utf-8") as f:
+            f.write(WRAPPER_CODE)
+        os.chmod(bin_path, 0o555 if was_locked else 0o755)
 
-    new_size = os.path.getsize(bin_path)
-    version_str = "standalone"
-    if os.path.isfile(record_path):
-        with open(record_path, "r", encoding="utf-8") as f:
-            rec = json.load(f)
-        version_str = str(rec.get("version", "unknown"))
-        if isinstance(rec.get("executable"), dict):
-            rec["executable"]["bytes"] = new_size
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(rec, f, separators=(",", ":"))
-            f.write("\n")
+        new_size = os.path.getsize(bin_path)
+        version_str = "standalone"
+        if os.path.isfile(record_path):
+            with open(record_path, "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            version_str = str(rec.get("version", "unknown"))
+            if isinstance(rec.get("executable"), dict):
+                rec["executable"]["bytes"] = new_size
+            with open(record_path, "w", encoding="utf-8") as f:
+                json.dump(rec, f, separators=(",", ":"))
+                f.write("\n")
+    finally:
+        if was_locked:
+            _relock_release(version_dir, bin_path, record_path)
 
     print(
         f"Patched Antigravity ACP ({version_str}, {label}):\n"
@@ -735,6 +464,7 @@ def patch_directory(version_dir: str, label: str, bin_name: str) -> None:
         f"  wrapper: {bin_path} ({new_size} bytes)\n"
         f"  real binary: {real_bin_path}"
         + (f"\n  record: {record_path}" if os.path.isfile(record_path) else "")
+        + ("\n  release lock: restored (0500/0555/0400)" if was_locked else "")
     )
 
 
@@ -748,18 +478,25 @@ def restore_directory(version_dir: str, label: str, bin_name: str) -> None:
         print(f"Target {version_dir} ({label}) is not patched (no {real_bin_path} found).")
         return
 
-    shutil.move(real_bin_path, bin_path)
-    if os.path.exists(record_bak_path):
-        shutil.move(record_bak_path, record_path)
-    elif os.path.isfile(record_path):
-        real_size = os.path.getsize(bin_path)
-        with open(record_path, "r", encoding="utf-8") as f:
-            rec = json.load(f)
-        if isinstance(rec.get("executable"), dict):
-            rec["executable"]["bytes"] = real_size
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(rec, f, separators=(",", ":"))
-            f.write("\n")
+    was_locked = _unlock_for_write(
+        version_dir, (bin_path, real_bin_path, record_path, record_bak_path)
+    )
+    try:
+        shutil.move(real_bin_path, bin_path)
+        if os.path.exists(record_bak_path):
+            shutil.move(record_bak_path, record_path)
+        elif os.path.isfile(record_path):
+            real_size = os.path.getsize(bin_path)
+            with open(record_path, "r", encoding="utf-8") as f:
+                rec = json.load(f)
+            if isinstance(rec.get("executable"), dict):
+                rec["executable"]["bytes"] = real_size
+            with open(record_path, "w", encoding="utf-8") as f:
+                json.dump(rec, f, separators=(",", ":"))
+                f.write("\n")
+    finally:
+        if was_locked:
+            _relock_release(version_dir, bin_path, record_path)
 
     print(f"Restored original Antigravity binary in {version_dir} ({label}).")
 
@@ -787,6 +524,7 @@ def status_directory(version_dir: str, label: str, bin_name: str) -> None:
         f"  directory: {version_dir}\n"
         f"  executable: {bin_name}\n"
         f"  patched: {is_patched}\n"
+        f"  dir locked: {_is_dir_locked(version_dir)}\n"
         f"  {bin_name} size: {bin_size}\n"
         f"  {real_bin_name} size: {real_size}\n"
         f"  .install-complete.json bytes: {rec_bytes}"

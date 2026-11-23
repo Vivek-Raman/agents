@@ -1,15 +1,15 @@
 ---
-name: executing-plans
+name: implement-plans
 description: Use when you have a written implementation plan to execute in a separate session with review checkpoints
 ---
 
-# Executing Plans
+# Implement Plans
 
 ## Overview
 
 Load plan, review critically, execute all tasks, report when complete.
 
-**Announce at start:** "I'm using the executing-plans skill to implement this plan."
+**Announce at start:** "I'm using the implement-plans skill to implement this plan."
 
 **Note:** Tell your human partner that Superpowers works much better with access to subagents (Claude Code, Codex CLI, Codex App, Copilot CLI, and Antigravity CLI qualify`). If subagents are available, use superpowers:subagent-driven-development instead of this skill.
 
