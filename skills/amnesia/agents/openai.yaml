@@ -1,0 +1,6 @@
+interface:
+  display_name: "Amnesia"
+  short_description: "Catch up on T3 worktrees and recent sessions"
+  default_prompt: "Use $amnesia to summarize recent T3 Code sessions by repository and worktree, with thread links and pending work."
+policy:
+  allow_implicit_invocation: false
