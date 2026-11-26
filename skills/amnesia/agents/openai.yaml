@@ -1,6 +1,6 @@
 interface:
   display_name: "Amnesia"
-  short_description: "Catch up on this project's T3 worktrees and sessions"
-  default_prompt: "Use $amnesia to summarize recent T3 Code sessions for the current project by worktree, with thread links and pending work."
+  short_description: "Visual reminder of this project's unfinished work"
+  default_prompt: "Use $amnesia to show uncommitted or unmerged worktrees in the current project and their next actions, using T3 HTML tools and frontend-design guidance with recent threads only as supporting context."
 policy:
   allow_implicit_invocation: false
